@@ -1,434 +1,125 @@
 ## shm Types & Data Structures
 ##
 ## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
-## Defines configuration models, enumerations, structural interfaces, and associated methods
-## showcasing the full range of modern Alya type system capabilities.
-
-# ───────────────────────────────────────────────────────────────
-# Structural Interfaces (Duck Typing)
-# ───────────────────────────────────────────────────────────────
-
-## Public interface for objects capable of producing a formatted string summary.
-##
-## Any struct implementing a `summary(self) -> string` method implicitly
-## satisfies this interface via Alya's structural duck-typing runtime.
-pub interface Summarizable
-    function summary(self) -> string
-end
-
-## Public interface for objects that provide detailed status descriptions and validation.
-##
-## Structs implementing `describe(self) -> string` and `is_valid(self) -> int`
-## satisfy this contract without explicit inheritance declarations.
-pub interface Describable
-    function describe(self) -> string
-    function is_valid(self) -> int
-end
+## Defines channel configuration, overflow policy, and error models for
+## shared-memory ring-buffer messaging.
 
 # ───────────────────────────────────────────────────────────────
 # Enumerations
 # ───────────────────────────────────────────────────────────────
 
-## Public enumeration of entity lifecycle status states.
+## Policy applied when a send does not fit the remaining ring space.
 ##
-## Defines sequential status codes from pending to completed or error states.
-pub enum ShmStatus
-    Pending = 0,
-    Active = 1,
-    Archived = 2,
-    Error = 3
-end
-
-## Public enumeration of operational priority levels.
-##
-## Used to determine dispatch scheduling, queue ordering, and urgency tiers.
-pub enum ShmPriority
-    Low = 0,
-    Normal = 1,
-    High = 2,
-    Critical = 3
-end
-
-## Public enumeration of greeting and presentation styles.
-##
-## Governs formatting salutations, prefixes, and stylistic tone.
-pub enum ShmStyle
-    Standard = 0,
-    Formal = 1,
-    Casual = 2
+## `Overwrite` drops the oldest messages to make room; `Block` waits
+## until the reader frees space or the timeout expires.
+pub enum ShmOverflow
+    Overwrite = 0,
+    Block = 1
 end
 
 # ───────────────────────────────────────────────────────────────
 # Data Models (Structs)
 # ───────────────────────────────────────────────────────────────
 
-## Configuration data model holding execution parameters and metadata.
-##
-## Encapsulates target identity, counter thresholds, priority tier, stylistic
-## mode, active status flag, and associated classification tags.
+## Configuration for opening a shared-memory channel.
 ##
 ## ### Fields
-## - `name`: Validated entity identifier string.
-## - `count`: Repetition limit or processing counter.
-## - `priority`: Operational priority level (`ShmPriority` enum value).
-## - `style`: Presentation style variant (`ShmStyle` enum value).
-## - `enabled`: Activation flag (1 for active, 0 for inactive).
-## - `tags`: Categorical metadata tags array.
+## - `name`: Logical channel name (`[A-Za-z0-9_-]`, up to 32 chars).
+## - `capacity`: Data area size in bytes (minimum 1024).
+## - `overflow`: Active `ShmOverflow` value.
+## - `polling_ms`: Receiver poll slice in milliseconds.
 pub struct ShmConfig
     name: string,
-    count: int,
-    priority: int,
-    style: int,
-    enabled: int,
-    tags: array
+    capacity: int,
+    overflow: int,
+    polling_ms: int
 end
 
-## Container representing the outcome of an operation.
-##
-## Holds an optional payload value, numeric status code, informational message,
-## and accumulated error diagnostic messages.
+## Error thrown for invalid configuration and channel I/O faults.
 ##
 ## ### Fields
-## - `value`: Result payload (any type, or null on failure).
-## - `status`: Outcome code (0 for success, non-zero for errors).
-## - `message`: Human-readable summary or error explanation.
-## - `errors`: Diagnostic error messages array.
-pub struct ShmResult
-    value,
-    status: int,
+## - `message`: Human-readable failure description.
+## - `code`: Numeric failure category.
+pub struct ShmError
     message: string,
-    errors: array
-end
-
-## Aggregated run statistics tracking test, processing, or batch metrics.
-##
-## Records total observed items, successes, failures, and skipped items.
-##
-## ### Fields
-## - `total`: Total processed items count.
-## - `passed`: Succeeded items count.
-## - `failed`: Failed items count.
-## - `skipped`: Skipped items count.
-pub struct ShmStats
-    total: int,
-    passed: int,
-    failed: int,
-    skipped: int
+    code: int
 end
 
 # ───────────────────────────────────────────────────────────────
-# Private Helper Functions
+# Constructors & Validation
 # ───────────────────────────────────────────────────────────────
 
-# Internal sanitizer ensuring a non-empty, non-null string fallback.
-function sanitize_text_internal(text, fallback: string) -> string
-    return when
-        text is null => fallback
-        text == ""   => fallback
-        else         => text
+## Creates a channel configuration with sensible defaults.
+##
+## ### Parameters
+## - `name`: Logical channel name.
+## - `capacity`: Data area size in bytes (defaults to 1048576).
+## - `overflow`: `ShmOverflow` value (defaults to Overwrite).
+## - `polling_ms`: Receiver poll slice in milliseconds (defaults to 10).
+##
+## ### Returns
+## Initialized `ShmConfig`.
+pub function shm_config(name: string, capacity: int = 1048576, overflow: int = ShmOverflow.Overwrite, polling_ms: int = 10) -> ShmConfig
+    let n = name
+    if n is null
+        n = ""
     end
-end
-
-# Formats integer division as a percentage string, clamping denominator zero.
-function format_percent_internal(passed: int, total: int) -> string
-    if total <= 0
-        return "0%"
+    let cap = capacity
+    if cap <= 0
+        cap = 1048576
     end
-    let pct = (passed * 100) / total
-    return "{pct}%"
-end
-
-# ───────────────────────────────────────────────────────────────
-# Public Sanitization and Factory Constructors
-# ───────────────────────────────────────────────────────────────
-
-## Validates and sanitizes a candidate name string.
-##
-## Replaces null or empty strings with the default `"World"` fallback.
-##
-## ### Parameters
-## - `name`: The candidate name value to sanitize.
-##
-## ### Returns
-## The validated string value, or `"World"` if empty or null.
-##
-## ### Examples
-## ```alya
-## let clean = sanitize_name(null) # "World"
-## let user = sanitize_name("Alice") # "Alice"
-## ```
-pub function sanitize_name(name) -> string
-    return sanitize_text_internal(name, "World")
-end
-
-## Factory constructor creating a validated `ShmConfig` instance.
-##
-## Sanitizes the input name and sets sensible defaults for optional fields.
-##
-## ### Parameters
-## - `name`: Entity identifier name. Defaults to `"World"`.
-## - `count`: Counter or repetition limit. Defaults to `1`.
-## - `priority`: Priority tier. Defaults to `ShmPriority.Normal`.
-## - `style`: Presentation style variant. Defaults to `ShmStyle.Standard`.
-## - `enabled`: Active flag. Defaults to `1`.
-## - `tags`: Categorization tags array. Defaults to `[]`.
-##
-## ### Returns
-## A fully initialized `ShmConfig` instance.
-##
-## ### Examples
-## ```alya
-## let cfg = make_config("Alice", 3, ShmPriority.High)
-## ```
-pub function make_config(name = "World", count: int = 1, priority: int = ShmPriority.Normal, style: int = ShmStyle.Standard, enabled: int = 1, tags: array = []) -> ShmConfig
-    let valid_name = sanitize_name(name)
-    return ShmConfig {
-        name: valid_name,
-        count: count,
-        priority: priority,
-        style: style,
-        enabled: enabled,
-        tags: tags
-    }
-end
-
-## Factory constructor creating a successful `ShmResult`.
-##
-## ### Parameters
-## - `value`: The success payload to encapsulate.
-## - `message`: Descriptive success message string. Defaults to `"OK"`.
-##
-## ### Returns
-## A `ShmResult` with status `0` and empty errors array.
-##
-## ### Examples
-## ```alya
-## let res = ok_result("Processed data", "Success")
-## ```
-pub function ok_result(value, message: string = "OK") -> ShmResult
-    return ShmResult {
-        value: value,
-        status: 0,
-        message: message,
-        errors: []
-    }
-end
-
-## Factory constructor creating a failed `ShmResult`.
-##
-## ### Parameters
-## - `message`: Descriptive error message string.
-## - `errors`: Diagnostic error details array. Defaults to `[]`.
-##
-## ### Returns
-## A `ShmResult` with status `1` and null value payload.
-##
-## ### Examples
-## ```alya
-## let err = error_result("Validation failed", ["Name is missing"])
-## ```
-pub function error_result(message: string, errors: array = []) -> ShmResult
-    return ShmResult {
-        value: null,
-        status: 1,
-        message: message,
-        errors: errors
-    }
-end
-
-## Factory constructor creating a `ShmStats` metric record.
-##
-## ### Parameters
-## - `total`: Total observed items count.
-## - `passed`: Succeeded items count.
-## - `failed`: Failed items count.
-## - `skipped`: Skipped items count. Defaults to `0`.
-##
-## ### Returns
-## A populated `ShmStats` record.
-##
-## ### Examples
-## ```alya
-## let stats = make_stats(100, 95, 5, 0)
-## ```
-pub function make_stats(total: int, passed: int, failed: int, skipped: int = 0) -> ShmStats
-    return ShmStats {
-        total: total,
-        passed: passed,
-        failed: failed,
-        skipped: skipped
-    }
-end
-
-# ───────────────────────────────────────────────────────────────
-# Struct Methods: ShmConfig
-# ───────────────────────────────────────────────────────────────
-
-## Returns a formatted single-line string summary of this configuration.
-##
-## Implicitly satisfies the `Summarizable` interface.
-##
-## ### Parameters
-## - `self`: The target `ShmConfig` instance.
-##
-## ### Returns
-## Formatted summary string in the form `"{name} (count: {count}, enabled: {enabled})"`.
-pub function ShmConfig.summary(self: ShmConfig) -> string
-    let active_str = when self.enabled
-        is true => "active"
-        else => "disabled"
+    let poll = polling_ms
+    if poll <= 0
+        poll = 10
     end
-    return "{self.name} (count: {self.count}, {active_str})"
+    return ShmConfig { name: n, capacity: cap, overflow: overflow, polling_ms: poll }
 end
 
-## Returns a detailed multi-attribute description of this configuration.
-##
-## Implicitly satisfies the `Describable` interface.
+## Returns true when the configuration can open a channel.
 ##
 ## ### Parameters
-## - `self`: The target `ShmConfig` instance.
+## - `cfg`: Configuration to validate.
 ##
 ## ### Returns
-## Detailed descriptive string including priority and style codes.
-pub function ShmConfig.describe(self: ShmConfig) -> string
-    return "[Config] name={self.name}, count={self.count}, priority={self.priority}, style={self.style}"
-end
-
-## Validates whether this configuration conforms to essential operational constraints.
-##
-## Implicitly satisfies the `Describable` interface.
-##
-## ### Parameters
-## - `self`: The target `ShmConfig` instance.
-##
-## ### Returns
-## `1` if valid (non-empty name and count >= 0), `0` otherwise.
-pub function ShmConfig.is_valid(self: ShmConfig) -> int
-    if self.name == "" or self.count < 0
+## True for a non-empty name, capacity >= 1024, and a known overflow mode.
+pub function shm_config_is_valid(cfg) -> bool
+    if cfg is null
+        return false
+    end
+    if cfg.name is null or cfg.name == ""
+        return false
+    end
+    if cfg.capacity < 1024
+        return false
+    end
+    if cfg.overflow != ShmOverflow.Overwrite and cfg.overflow != ShmOverflow.Block
         return false
     end
     return true
 end
 
-## Returns 1 if this configuration is enabled, 0 otherwise.
+# ───────────────────────────────────────────────────────────────
+# Struct Methods
+# ───────────────────────────────────────────────────────────────
+
+## Returns true when this configuration can open a channel.
 ##
 ## ### Parameters
 ## - `self`: The target `ShmConfig` instance.
 ##
 ## ### Returns
-## `1` when enabled, `0` when disabled.
-pub function ShmConfig.is_enabled(self: ShmConfig) -> int
-    return self.enabled
+## True when valid, else false.
+pub function ShmConfig.is_valid(self: ShmConfig) -> bool
+    return shm_config_is_valid(self)
 end
 
-## Returns a new configuration copy with an updated name.
+## Returns a single-line summary of the configuration.
 ##
 ## ### Parameters
-## - `self`: The current `ShmConfig` instance.
-## - `new_name`: The replacement name string.
+## - `self`: The target `ShmConfig` instance.
 ##
 ## ### Returns
-## A new `ShmConfig` instance with updated name.
-pub function ShmConfig.with_name(self: ShmConfig, new_name) -> ShmConfig
-    return ShmConfig {
-        name: sanitize_name(new_name),
-        count: self.count,
-        priority: self.priority,
-        style: self.style,
-        enabled: self.enabled,
-        tags: self.tags
-    }
-end
-
-## Returns a new configuration copy with an updated priority level.
-##
-## ### Parameters
-## - `self`: The current `ShmConfig` instance.
-## - `new_priority`: New priority level from `ShmPriority`.
-##
-## ### Returns
-## A new `ShmConfig` instance with updated priority.
-pub function ShmConfig.with_priority(self: ShmConfig, new_priority: int) -> ShmConfig
-    return ShmConfig {
-        name: self.name,
-        count: self.count,
-        priority: new_priority,
-        style: self.style,
-        enabled: self.enabled,
-        tags: self.tags
-    }
-end
-
-# ───────────────────────────────────────────────────────────────
-# Struct Methods: ShmResult
-# ───────────────────────────────────────────────────────────────
-
-## Returns 1 if this result represents a successful operation.
-##
-## ### Parameters
-## - `self`: The target `ShmResult` instance.
-##
-## ### Returns
-## `1` when status is `0`, `0` otherwise.
-pub function ShmResult.is_ok(self: ShmResult) -> int
-    if self.status == 0
-        return true
-    end
-    return false
-end
-
-## Returns 1 if this result represents an error condition.
-##
-## ### Parameters
-## - `self`: The target `ShmResult` instance.
-##
-## ### Returns
-## `1` when status is non-zero, `0` when status is `0`.
-pub function ShmResult.is_error(self: ShmResult) -> int
-    if self.status != 0
-        return true
-    end
-    return false
-end
-
-## Unwraps the result's message string, or returns a fallback string on error.
-##
-## ### Parameters
-## - `self`: The target `ShmResult` instance.
-## - `fallback`: Alternative string returned if this result represents an error.
-##
-## ### Returns
-## `message` on success, or `fallback` on error.
-pub function ShmResult.unwrap_or(self: ShmResult, fallback: string) -> string
-    if self.status == 0
-        return self.message
-    end
-    return fallback
-end
-
-# ───────────────────────────────────────────────────────────────
-# Struct Methods: ShmStats
-# ───────────────────────────────────────────────────────────────
-
-## Returns the total number of checked items (passed + failed).
-##
-## ### Parameters
-## - `self`: The target `ShmStats` instance.
-##
-## ### Returns
-## Integer sum of passed and failed items.
-pub function ShmStats.total_checked(self: ShmStats) -> int
-    return self.passed + self.failed
-end
-
-## Computes and returns the success rate percentage as a formatted string.
-##
-## ### Parameters
-## - `self`: The target `ShmStats` instance.
-##
-## ### Returns
-## Formatted percentage string (e.g. `"90%"`).
-pub function ShmStats.success_rate(self: ShmStats) -> string
-    let checked = self.passed + self.failed
-    return format_percent_internal(self.passed, checked)
+## Formatted `"name (capacity bytes, overflow=N)"` summary.
+pub function ShmConfig.summary(self: ShmConfig) -> string
+    return "{self.name} ({self.capacity} bytes, overflow={self.overflow})"
 end

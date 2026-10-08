@@ -2,5 +2,12 @@
 # Part of the Alya Language package ecosystem (https://github.com/alya-lang)
 
 extern "C" from "shm"
-    function alya_shm_add(a: i32, b: i32) -> i32
+    function shm_open_channel(name: str, capacity: i64, overflow: i32, polling_ms: i32) -> i32
+    function shm_close_channel(slot: i32) -> i32
+    function shm_unlink_channel(name: str) -> i32
+    function shm_send_message(slot: i32, data: str, msg_type: i64, timeout_ms: i32) -> i64
+    function shm_recv_message(slot: i32, buf: ptr, maxlen: i64, type_out: ptr, timeout_ms: i32) -> i64
+    function shm_available_bytes(slot: i32) -> i64
+    function shm_next_message_len(slot: i32) -> i64
+    function shm_last_error() -> str
 end

@@ -1,0 +1,222 @@
+## shm Shared-Memory Channel
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Framing-aware wrappers over the bundled native ring buffer (`c/shm.c`).
+## Two handles opened on the same name share one segment, so a sender and
+## a receiver can live in the same process (tests, demos) or in two
+## processes (real deployments) with identical calls.
+
+import "std/mem"
+import "../types.alya"
+import "../ffi.alya"
+
+## Opens (or joins) a shared-memory channel.
+##
+## The first opener creates and sizes the segment; later openers with the
+## same name and capacity join it. A capacity mismatch with the live
+## segment throws `ShmError` (unlink the stale channel first).
+##
+## ### Parameters
+## - `name`: Logical channel name.
+## - `capacity`: Data area size in bytes (defaults to 1048576, min 1024).
+## - `overflow`: `ShmOverflow` value (defaults to Overwrite).
+## - `polling_ms`: Receiver poll slice in milliseconds (defaults to 10).
+##
+## ### Returns
+## Channel slot handle (>= 0).
+pub function shm_open(name: string, capacity: int = 1048576, overflow: int = ShmOverflow.Overwrite, polling_ms: int = 10) -> int
+    if name is null or name == ""
+        throw ShmError { message: "shm: invalid channel name", code: 1 }
+    end
+    let cap = capacity
+    if cap <= 0
+        cap = 1048576
+    end
+    if cap < 1024
+        throw ShmError { message: "shm: capacity too small (min 1024 bytes)", code: 1 }
+    end
+    if overflow != ShmOverflow.Overwrite and overflow != ShmOverflow.Block
+        throw ShmError { message: "shm: invalid overflow mode", code: 1 }
+    end
+    let poll = polling_ms
+    if poll <= 0
+        poll = 10
+    end
+    let slot = shm_open_channel(name, cap, overflow, poll)
+    if slot < 0
+        throw ShmError { message: shm_last_error(), code: 2 }
+    end
+    return slot
+end
+
+## Opens a channel from a `ShmConfig` record.
+##
+## ### Parameters
+## - `cfg`: Channel configuration.
+##
+## ### Returns
+## Channel slot handle (>= 0).
+pub function shm_open_config(cfg) -> int
+    if cfg is null or shm_config_is_valid(cfg) == false
+        throw ShmError { message: "shm: invalid channel configuration", code: 1 }
+    end
+    return shm_open(cfg.name, cfg.capacity, cfg.overflow, cfg.polling_ms)
+end
+
+## Closes a channel slot, ignoring invalid handles.
+##
+## The shared segment survives until every handle closes (plus an
+## explicit `shm_unlink` on POSIX when no opener remains).
+##
+## ### Parameters
+## - `slot`: Channel slot handle to close.
+##
+## ### Returns
+## Always 0.
+pub function shm_close(slot: int) -> int
+    if slot < 0
+        return 0
+    end
+    shm_close_channel(slot)
+    return 0
+end
+
+## Removes a stale channel segment by name.
+##
+## Needed on POSIX when a crashed run leaves a segment behind (a later
+## open with a different capacity would otherwise mismatch). No-op on
+## Windows, where names vanish with the last handle.
+##
+## ### Parameters
+## - `name`: Logical channel name.
+##
+## ### Returns
+## Always 0.
+pub function shm_unlink(name: string) -> int
+    if name is null or name == ""
+        return 0
+    end
+    shm_unlink_channel(name)
+    return 0
+end
+
+## Sends one message into the channel.
+##
+## Payloads are byte-sized (UTF-8 safe); anything that fits the ring
+## capacity is accepted, larger payloads throw `ShmError`.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `payload`: Text payload (null becomes "").
+## - `msg_type`: Application message type (defaults to 0).
+## - `timeout_ms`: Maximum wait in Block mode (defaults to 5000).
+##
+## ### Returns
+## Payload bytes written.
+pub function shm_send(slot: int, payload, msg_type: int = 0, timeout_ms: int = 5000) -> int
+    if slot < 0
+        throw ShmError { message: "shm: invalid channel slot", code: 3 }
+    end
+    let body = payload
+    if body is null
+        body = ""
+    end
+    let t = timeout_ms
+    if t < 0
+        t = 0
+    end
+    let n = shm_send_message(slot, body, msg_type, t)
+    if n == -2
+        throw ShmError { message: shm_last_error(), code: 4 }
+    end
+    if n < 0
+        throw ShmError { message: shm_last_error(), code: 5 }
+    end
+    return n
+end
+
+## Receives the next message from the channel.
+##
+## Returns a `(payload, msg_type)` tuple; the payload is null on timeout
+## so callers can tell "no message yet" apart from an empty message.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `max_bytes`: Initial receive buffer in bytes (grows as needed, defaults to 65536).
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload on timeout.
+pub function shm_recv(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
+    if slot < 0
+        throw ShmError { message: "shm: invalid channel slot", code: 3 }
+    end
+    let limit = max_bytes
+    if limit <= 0
+        limit = 65536
+    end
+    let t = timeout_ms
+    if t < 0
+        t = 0
+    end
+    let need = shm_next_message_len(slot)
+    let size = limit
+    if need > size
+        size = need
+    end
+    if size <= 0
+        size = limit
+    end
+    let buf = alloc_mem(size + 1)
+    let type_slot = alloc_zeroed(8)
+    let attempt = 0
+    while attempt < 2
+        let n = shm_recv_message(slot, buf, size, type_slot, t)
+        if n == -2
+            free_mem(buf)
+            free_mem(type_slot)
+            return null, 0
+        end
+        if n == -3
+            free_mem(buf)
+            free_mem(type_slot)
+            let retry_need = shm_next_message_len(slot)
+            size = limit
+            if retry_need > size
+                size = retry_need
+            end
+            buf = alloc_mem(size + 1)
+            type_slot = alloc_zeroed(8)
+            attempt += 1
+            continue
+        end
+        if n < 0
+            free_mem(buf)
+            free_mem(type_slot)
+            throw ShmError { message: shm_last_error(), code: 5 }
+        end
+        write_byte(buf, n, 0)
+        let payload = string_clone(to_string(buf))
+        let kind = read_int(type_slot, 0)
+        free_mem(buf)
+        free_mem(type_slot)
+        return payload, kind
+    end
+    free_mem(buf)
+    free_mem(type_slot)
+    throw ShmError { message: "shm: receive buffer too small", code: 5 }
+end
+
+## Returns the bytes currently waiting in the channel.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+##
+## ### Returns
+## Buffered byte count, or -1 for invalid handles.
+pub function shm_available(slot: int) -> int
+    if slot < 0
+        return -1
+    end
+    return shm_available_bytes(slot)
+end

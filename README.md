@@ -11,15 +11,13 @@ Shared-memory messaging for Alya: memory-mapped ring-buffer channels for fast lo
 
 ## 🌟 Features
 
-- ⚡ **Lightweight & High Performance**: Minimal memory overhead, zero runtime bloat, and fast native execution
-- 🧩 **Modular Architecture**: Layered multi-module design featuring a clean public facade (`src/lib.alya`), rich data models (`src/types.alya`), and encapsulated core formatters (`src/core/formatter.alya`)
-- 🔒 **Public/Private Visibility (`pub`)**: Fine-grained export control with `pub` for public functions, structs, and enums, keeping internal helper functions private and encapsulated
-- 🎭 **Structural Duck Typing & Interfaces**: Dynamic interface dispatch (`Summarizable`, `Describable`) without brittle inheritance hierarchies
-- 📦 **Rich Domain Models & Enums**: Idiomatic `enum` types (`ShmStatus`, `ShmPriority`, `ShmStyle`) and typed data containers (`ShmConfig`, `ShmResult`, `ShmStats`)
-- 🎯 **Advanced Pattern Matching**: Clean branching with `when` expressions, range matching, and condition guards
-- 🛡️ **Defensive Result Pattern**: Structured error handling and outcome encapsulation with `ok_result` and `error_result`
-- 🧪 **Enterprise Test & Benchmark Suite**: 100% test coverage with standard assertions (`std/test`) and micro-benchmarking (`std/test` bench runner)
-- 🚩 **Feature-Gated API Slices**: Optional capability slices via `[features]` in `alya.toml` (`default = ["extras"]`) and `@cfg(feature = "extras")` gating with a `@cfg(not(feature = "extras"))` fallback stub (see `src/core/extras.alya`)
+- ⚡ **Zero-Copy Local Messaging**: Memory-mapped ring buffer shared between processes — no sockets, no kernel copies on the hot path (~3µs roundtrips)
+- 🔌 **Native Cross-Platform Engine**: Bundled zero-dependency C engine (`c/shm.c`) — Windows file mappings with named mutex/event, POSIX `shm_open` with named semaphores
+- 🔒 **True Cross-Process Locking**: Semaphore/mutex-guarded positions on every platform (no local-only locks)
+- 🧩 **Binary-Framed Records**: `[len][type][payload]` records with wraparound handling; UTF-8 payloads of any size up to capacity
+- 🎯 **Overflow Policies**: `Overwrite` drops oldest messages under pressure, `Block` waits for the reader with a timeout
+- 🛡️ **Defensive Result Pattern**: Structured `ShmError` throws for bad names, capacity mismatches, oversize messages, and timeouts
+- 🧪 **Enterprise Test & Benchmark Suite**: Dual-handle roundtrips, overwrite math, block timeouts, and mismatch coverage with standard assertions (`std/test`)
 
 ---
 
@@ -31,25 +29,26 @@ shm/
 ├── .editorconfig           # Uniform formatting rules across IDEs and editors
 ├── .gitignore              # Ecosystem standard ignore filters
 ├── .vscode/                # VS Code workspace settings, DAP launch configurations & tasks
-├── alya.toml               # Package manifest with dependencies, [features] and optional [build]
-├── c/                      # (Optional) Native C sources for zero-dependency FFI packages
+├── alya.toml               # Package manifest with dependencies and native [build]
+├── c/                      # Bundled native ring-buffer engine
+│   ├── shm.c               # Ring buffer, locks, events, send/recv/peek paths
+│   └── shm.h               # Native API header
 ├── src/
-│   ├── lib.alya            # Public API facade (pub exports, re-exports & pipeline runners)
+│   ├── lib.alya            # Public API facade (lifecycle and messaging)
 │   ├── types.alya          # Data models, pub enums, pub structs, and struct methods
-│   ├── ffi.alya            # (Optional) Native extern "C" declarations
+│   ├── ffi.alya            # Native extern "C" declarations for the engine
 │   └── core/               # Subdirectory module hierarchy
-│       ├── formatter.alya  # Domain formatting routines, salutation builders & pattern matchers
-│       └── extras.alya     # Feature-gated (`extras`) optional API slice with `@cfg` gating
+│       └── channel.alya    # Open/send/recv/close/unlink wrappers
 ├── examples/
-│   └── demo.alya           # Comprehensive runnable walkthrough of all package capabilities
+│   └── demo.alya           # Runnable walkthrough of echo and overwrite
 ├── tests/
-│   └── test_basic.alya     # Automated test suite with 100% feature coverage
+│   └── test_basic.alya     # Automated test suite with ring-behavior coverage
 └── benches/
-    └── bench_basic.alya    # Micro-benchmarks measuring performance and throughput
+    └── bench_basic.alya    # Micro-benchmarks for config and roundtrips
 ```
 
 > [!NOTE]
-> **Visibility & Modularity:** Symbols annotated with `pub` (`pub function`, `pub struct`, `pub enum`, `pub interface`) are exported to external consumers and re-exporting modules. Symbols without `pub` remain strictly internal to their declaring module, preventing symbol collisions and implementation leakage.
+> **Visibility & Modularity:** Symbols annotated with `pub` (`pub function`, `pub struct`, `pub enum`) are exported to external consumers and re-exporting modules. Symbols without `pub` remain strictly internal to their declaring module, preventing symbol collisions and implementation leakage.
 
 ---
 
@@ -77,18 +76,20 @@ alya install
 import "shm" as pkg
 
 function main()
-    # 1. Basic facade call with default parameter
-    let greeting = pkg::hello()
-    say f"Greeting:  {greeting}"
+    # Two handles on one name share a segment (threads, or two processes
+    # opening the same name with the same capacity).
+    pkg::unlink_channel("orders")
 
-    # 2. Struct configuration with priority, style, and methods
-    let cfg = pkg::new_config("Community", 5, pkg::ShmPriority.High, pkg::ShmStyle.Formal)
-    say f"Summary:   {cfg.summary()}"
-    say f"Formatted: {pkg::core_format_custom(cfg)}"
+    let writer = pkg::open_channel("orders")
+    let reader = pkg::open_channel("orders")
 
-    # 3. Processing pipeline returning Result model
-    let res = pkg::process("Analytics", 3, pkg::ShmPriority.Critical)
-    say f"Outcome:   {res.message}"
+    pkg::send_text(writer, "hello", 1)
+    let text, kind = pkg::recv_text(reader, 2000)
+    say f"Got: {text} (type={kind})"
+
+    pkg::close_channel(writer)
+    pkg::close_channel(reader)
+    pkg::unlink_channel("orders")
 end
 
 main()
@@ -100,45 +101,31 @@ main()
 
 | Symbol | Visibility | Description |
 |---|---|---|
-| `hello(name = "World")` | `pub function` | Returns a formatted greeting string. Defaults to `"World"` if null or empty. |
-| `new_config(name, count, priority, style)` | `pub function` | Factory constructing a `ShmConfig` with sensible defaults. |
-| `make_config(name, count, priority, style, enabled, tags)` | `pub function` | Full constructor for `ShmConfig`. |
-| `process(label, count, priority)` | `pub function` | Runs processing pipeline, returning an `ok_result` `ShmResult`. |
-| `process_batch(labels)` | `pub function` | Formats an array of labels in batch, returning an array of strings. |
-| `ok_result(value, message)` | `pub function` | Constructs a successful `ShmResult` container (`status = 0`). |
-| `error_result(message, errors)` | `pub function` | Constructs a failed `ShmResult` container (`status = 1`). |
-| `make_stats(total, passed, failed, skipped)` | `pub function` | Constructs a `ShmStats` metrics record. |
-| `format_summary(cfg)` | `pub function` | Formats summary of a config instance (satisfies `Summarizable`). |
-| `format_description(cfg)` | `pub function` | Formats description of a config instance (satisfies `Describable`). |
-| `format_config(config)` | `pub function` | Multi-field formatter producing descriptive overview of a `ShmConfig`. |
-| `format_result(result)` | `pub function` | Formats a `ShmResult` into `[OK]` or `[ERROR]` status line. |
-| `format_stats(stats)` | `pub function` | Formats total checked items and success rate percentage. |
-| `clamp(n, min_val, max_val)` | `pub function` | Clamps an integer value to the closed range `[min_val, max_val]`. |
-| `pluralize(n, singular, plural)` | `pub function` | Pattern-matches count to return singular or plural noun form. |
-| `repeat_string(label, count)` | `pub function` | Repeats a string into an array of `count` items. |
-| `extra_greeting(name = "World")` | `pub function` (`extras` feature, default-on) | Enthusiastic greeting slice gated by `@cfg(feature = "extras")`; stub throws a descriptive error when the feature is off. |
-| `Summarizable` | `pub interface` | Structural contract requiring `summary(self) -> string`. |
-| `Describable` | `pub interface` | Structural contract requiring `describe(self) -> string` and `is_valid(self) -> int`. |
-| `ShmStatus` | `pub enum` | Lifecycle status codes (`Pending = 0`, `Active = 1`, `Archived = 2`, `Error = 3`). |
-| `ShmPriority` | `pub enum` | Priority tiers (`Low = 0`, `Normal = 1`, `High = 2`, `Critical = 3`). |
-| `ShmStyle` | `pub enum` | Presentation styles (`Standard = 0`, `Formal = 1`, `Casual = 2`). |
-| `ShmConfig` | `pub struct` | Primary configuration model (`name`, `count`, `priority`, `style`, `enabled`, `tags`). |
-| `ShmConfig.summary()` | `pub method` | Single-line formatted summary (satisfies `Summarizable`). |
-| `ShmConfig.describe()` | `pub method` | Detailed multi-field description (satisfies `Describable`). |
-| `ShmConfig.is_valid()` | `pub method` | Validation guard returning 1 if valid, 0 otherwise. |
-| `ShmConfig.is_enabled()` | `pub method` | Returns 1 if active, 0 if disabled. |
-| `ShmConfig.with_name(new_name)` | `pub method` | Immutable copy with updated name. |
-| `ShmConfig.with_priority(new_prio)` | `pub method` | Immutable copy with updated priority tier. |
-| `ShmResult` | `pub struct` | Operation outcome model (`value`, `status`, `message`, `errors`). |
-| `ShmResult.is_ok()` | `pub method` | Returns 1 if successful (`status == 0`), 0 otherwise. |
-| `ShmResult.is_error()` | `pub method` | Returns 1 if error (`status != 0`), 0 otherwise. |
-| `ShmResult.unwrap_or(fallback)` | `pub method` | Returns message on success, or fallback on error. |
-| `ShmStats` | `pub struct` | Run statistics model (`total`, `passed`, `failed`, `skipped`). |
-| `ShmStats.total_checked()` | `pub method` | Sum of passed and failed items count. |
-| `ShmStats.success_rate()` | `pub method` | Computed percentage string (e.g. `"95%"`). |
+| `open_channel(name, capacity, overflow)` | `pub function` | Opens (or joins) a channel; throws `ShmError` on bad config or mismatch. |
+| `open_config(cfg)` | `pub function` | Opens a channel from a `ShmConfig` record. |
+| `default_config(name, capacity, overflow)` | `pub function` | Creates a `ShmConfig` with sensible defaults. |
+| `close_channel(slot)` | `pub function` | Closes a slot (ignores invalid handles). |
+| `unlink_channel(name)` | `pub function` | Removes a stale segment (needed on POSIX after crashes). |
+| `send_text(slot, payload, msg_type)` | `pub function` | Sends one message; returns payload bytes written. |
+| `recv_text(slot, timeout_ms)` | `pub function` | Receives next message; `(payload, type)` with null payload on timeout. |
+| `pending_bytes(slot)` | `pub function` | Buffered byte count, or -1 for invalid handles. |
+| `shm_open(name, capacity, overflow, polling_ms)` | `pub function` | Core open with explicit poll slice. |
+| `shm_open_config(cfg)` | `pub function` | Core open from a validated config. |
+| `shm_close(slot)` | `pub function` | Core close. |
+| `shm_unlink(name)` | `pub function` | Core unlink. |
+| `shm_send(slot, payload, msg_type, timeout_ms)` | `pub function` | Core send with explicit timeout. |
+| `shm_recv(slot, max_bytes, timeout_ms)` | `pub function` | Core receive with growing buffer. |
+| `shm_available(slot)` | `pub function` | Core buffered-bytes probe. |
+| `shm_config(name, capacity, overflow, polling_ms)` | `pub function` | Full config constructor. |
+| `shm_config_is_valid(cfg)` | `pub function` | True for usable configurations. |
+| `ShmOverflow` | `pub enum` | Overflow policy (`Overwrite = 0`, `Block = 1`). |
+| `ShmConfig` | `pub struct` | Channel configuration (`name`, `capacity`, `overflow`, `polling_ms`). |
+| `ShmConfig.is_valid()` | `pub method` | True for usable configurations. |
+| `ShmConfig.summary()` | `pub method` | `"name (capacity bytes, overflow=N)"` summary. |
+| `ShmError` | `pub struct` | Thrown failure (`message`, `code`). |
 
 > [!TIP]
-> **Internal Helpers & Documentation:** Public symbols are documented with `##` Markdown docstrings, enabling automatic API documentation generation via `alya doc`. Private functions such as `build_salutation` and `build_priority_label` in `src/core/formatter.alya` are not annotated with `pub` and remain encapsulated within their respective modules.
+> **Single Consumer:** One channel carries one shared read position, so each channel feeds a single consumer stream. Fan-out to N consumers needs N channels (one per consumer). Windows wakes receivers via events; POSIX receivers poll — tune `polling_ms` for your latency/CPU trade-off.
 
 ---
 
@@ -148,13 +135,6 @@ Run the automated test suite using `alya test`:
 
 ```bash
 alya test
-```
-
-Exercise feature selection (the `extras` slice is default-on):
-
-```bash
-alya test --features extras
-alya test --no-default-features
 ```
 
 Generate static API documentation:
