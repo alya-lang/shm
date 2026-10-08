@@ -1,0 +1,6 @@
+# Native C FFI declarations for shm
+# Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+extern "C" from "shm"
+    function alya_shm_add(a: i32, b: i32) -> i32
+end
