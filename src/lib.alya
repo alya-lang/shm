@@ -141,6 +141,64 @@ pub function channel_stats(slot: int) -> ShmStats
     return shm_stats(slot)
 end
 
+## Subscribes a broadcast reader to the channel.
+##
+## Up to 7 subscribers share one channel alongside the legacy default
+## stream; every subscriber observes every message.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+##
+## ### Returns
+## Reader id (1-7) for `recv_for` and `peek_for`.
+##
+## ### Examples
+## ```alya
+## let sub = subscribe(ch)
+## let text, kind = recv_for(ch, sub, 1000)
+## ```
+pub function subscribe(slot: int) -> int
+    return shm_subscribe(slot)
+end
+
+## Removes a broadcast reader from the channel.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `reader`: Reader id from `subscribe`.
+##
+## ### Returns
+## Always 0.
+pub function unsubscribe(slot: int, reader: int) -> int
+    return shm_unsubscribe(slot, reader)
+end
+
+## Receives the next message for a broadcast reader.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `reader`: Reader id from `subscribe`.
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload on timeout.
+pub function recv_for(slot: int, reader: int, timeout_ms: int = 5000)
+    return shm_recv_for(slot, reader, 65536, timeout_ms)
+end
+
+## Reads the next message for a reader without consuming it.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `reader`: Reader id from `subscribe`.
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload on timeout.
+pub function peek_for(slot: int, reader: int, timeout_ms: int = 5000)
+    return shm_peek_for(slot, reader, 65536, timeout_ms)
+end
+
 ## Reads the next message without consuming it.
 ##
 ## ### Parameters

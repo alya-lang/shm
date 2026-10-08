@@ -136,9 +136,10 @@ pub function shm_send(slot: int, payload, msg_type: int = 0, timeout_ms: int = 5
 end
 
 # Drains one message from the channel with (consume = 1) or without
-# (consume = 0) advancing the shared read position.
+# (consume = 0) advancing the read position. Reader 0 is the legacy
+# default stream; readers 1..7 are broadcast subscribers.
 # Returns (payload, msg_type) with null payload on timeout.
-function drain_message(slot: int, max_bytes: int, timeout_ms: int, consume: int)
+function drain_message(slot: int, max_bytes: int, timeout_ms: int, consume: int, reader: int = 0)
     if slot < 0
         throw ShmError { message: "shm: invalid channel slot", code: 3 }
     end
@@ -163,10 +164,18 @@ function drain_message(slot: int, max_bytes: int, timeout_ms: int, consume: int)
     let attempt = 0
     while attempt < 2
         let n = -2
-        if consume == 1
-            n = shm_recv_message(slot, buf, size, type_slot, t)
+        if reader == 0
+            if consume == 1
+                n = shm_recv_message(slot, buf, size, type_slot, t)
+            else
+                n = shm_peek_message(slot, buf, size, type_slot, t)
+            end
         else
-            n = shm_peek_message(slot, buf, size, type_slot, t)
+            if consume == 1
+                n = shm_recv_reader(slot, reader, buf, size, type_slot, t)
+            else
+                n = shm_peek_reader(slot, reader, buf, size, type_slot, t)
+            end
         end
         if n == -2
             free_mem(buf)
@@ -177,6 +186,9 @@ function drain_message(slot: int, max_bytes: int, timeout_ms: int, consume: int)
             free_mem(buf)
             free_mem(type_slot)
             let retry_need = shm_next_message_len(slot)
+            if reader != 0
+                retry_need = shm_reader_message_len(slot, reader)
+            end
             size = limit
             if retry_need > size
                 size = retry_need
@@ -354,6 +366,99 @@ pub function shm_send_bytes(slot: int, bytes, msg_type: int = 0, timeout_ms: int
         throw ShmError { message: shm_last_error(), code: 5 }
     end
     return sent
+end
+
+## Subscribes a broadcast reader to the channel.
+##
+## The reader starts at the oldest buffered message, so a fresh
+## subscriber receives channel history. Up to 7 subscribers share one
+## channel alongside the legacy default stream.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+##
+## ### Returns
+## Reader id (1-7) for `shm_recv_for` and friends.
+pub function shm_subscribe(slot: int) -> int
+    if slot < 0
+        throw ShmError { message: "shm: invalid channel slot", code: 3 }
+    end
+    let id = shm_subscribe_reader(slot)
+    if id < 0
+        throw ShmError { message: shm_last_error(), code: 6 }
+    end
+    return id
+end
+
+## Removes a broadcast reader from the channel.
+##
+## Idempotent: unsubscribing twice succeeds. Reader ids 1-7 only.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `reader`: Reader id from `shm_subscribe`.
+##
+## ### Returns
+## Always 0.
+pub function shm_unsubscribe(slot: int, reader: int) -> int
+    if slot < 0
+        return 0
+    end
+    if reader < 1 or reader > 7
+        throw ShmError { message: "shm: invalid reader id", code: 1 }
+    end
+    shm_unsubscribe_reader(slot, reader)
+    return 0
+end
+
+## Receives the next message for a broadcast reader.
+##
+## Every subscriber observes every message until pressure drops the
+## oldest ones (Overwrite) or the slowest reader stalls the writer
+## (Block). Returns `(payload, msg_type)` with null payload on timeout.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `reader`: Reader id from `shm_subscribe`.
+## - `max_bytes`: Initial receive buffer in bytes (grows as needed, defaults to 65536).
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload on timeout.
+pub function shm_recv_for(slot: int, reader: int, max_bytes: int = 65536, timeout_ms: int = 5000)
+    return drain_message(slot, max_bytes, timeout_ms, 1, reader)
+end
+
+## Reads the next message for a reader without consuming it.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `reader`: Reader id from `shm_subscribe`.
+## - `max_bytes`: Initial receive buffer in bytes (grows as needed, defaults to 65536).
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload on timeout.
+pub function shm_peek_for(slot: int, reader: int, max_bytes: int = 65536, timeout_ms: int = 5000)
+    return drain_message(slot, max_bytes, timeout_ms, 0, reader)
+end
+
+## Returns the bytes waiting for one broadcast reader.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `reader`: Reader id from `shm_subscribe`.
+##
+## ### Returns
+## Buffered byte count for that reader, or -1 on faults.
+pub function shm_reader_available(slot: int, reader: int) -> int
+    if slot < 0
+        return -1
+    end
+    if reader < 1 or reader > 7
+        return -1
+    end
+    return shm_reader_available_bytes(slot, reader)
 end
 
 ## Receives raw bytes (binary-safe, NUL bytes preserved).

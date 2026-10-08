@@ -9,6 +9,12 @@ extern "C" from "shm"
     function shm_send_raw(slot: i32, data: ptr, len: i64, msg_type: i64, timeout_ms: i32) -> i64
     function shm_recv_message(slot: i32, buf: ptr, maxlen: i64, type_out: ptr, timeout_ms: i32) -> i64
     function shm_peek_message(slot: i32, buf: ptr, maxlen: i64, type_out: ptr, timeout_ms: i32) -> i64
+    function shm_subscribe_reader(slot: i32) -> i32
+    function shm_unsubscribe_reader(slot: i32, reader: i32) -> i32
+    function shm_recv_reader(slot: i32, reader: i32, buf: ptr, maxlen: i64, type_out: ptr, timeout_ms: i32) -> i64
+    function shm_peek_reader(slot: i32, reader: i32, buf: ptr, maxlen: i64, type_out: ptr, timeout_ms: i32) -> i64
+    function shm_reader_available_bytes(slot: i32, reader: i32) -> i64
+    function shm_reader_message_len(slot: i32, reader: i32) -> i64
     function shm_channel_stats(slot: i32, out: ptr) -> i32
     function shm_available_bytes(slot: i32) -> i64
     function shm_next_message_len(slot: i32) -> i64

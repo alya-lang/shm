@@ -49,6 +49,23 @@ function main()
     pkg::close_channel(breader)
     pkg::unlink_channel("shm-bench-bytes")
 
+    # Bench 4: broadcast fan-out (1 send + 2 subscriber recvs) - 3k iterations
+    pkg::unlink_channel("shm-bench-fanout")
+    let fan = pkg::open_channel("shm-bench-fanout", 1048576, pkg::ShmOverflow.Overwrite)
+    let fs1 = pkg::shm_subscribe(fan)
+    let fs2 = pkg::shm_subscribe(fan)
+    bench_start(runner, 3000)
+    let f = 0
+    while f < 3000
+        pkg::send_text(fan, "news", 5)
+        pkg::shm_recv_for(fan, fs1, 65536, 5000)
+        pkg::shm_recv_for(fan, fs2, 65536, 5000)
+        f += 1
+    end
+    bench_stop(runner, "broadcast fan-out 3k")
+    pkg::close_channel(fan)
+    pkg::unlink_channel("shm-bench-fanout")
+
     # Bench 3: open/close - 500 iterations
     bench_start(runner, 500)
     let k = 0

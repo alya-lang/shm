@@ -18,6 +18,7 @@ Shared-memory messaging for Alya: memory-mapped ring-buffer channels for fast lo
 - 🎯 **Overflow Policies**: `Overwrite` drops oldest messages under pressure, `Block` waits for the reader with a timeout
 - 🔭 **Peek, Try-Ops & Stats**: Non-consuming reads, non-blocking variants, and shared lifetime counters (`sent`/`received`/`dropped`)
 - 🤝 **Request/Reply Helper**: Two-channel call pattern with correlation types for service-style messaging
+- 📢 **Broadcast Subscribers**: Up to 7 independent readers per channel — every subscriber observes every message, slow readers apply backpressure
 - 🛡️ **Defensive Result Pattern**: Structured `ShmError` throws for bad names, capacity mismatches, oversize messages, and timeouts
 - 🧪 **Enterprise Test & Benchmark Suite**: Dual-handle roundtrips, overwrite math, block timeouts, and mismatch coverage with standard assertions (`std/test`)
 
@@ -89,6 +90,12 @@ function main()
     let text, kind = pkg::recv_text(reader, 2000)
     say f"Got: {text} (type={kind})"
 
+    # Broadcast: a second reader observes the same history.
+    let sub = pkg::subscribe(reader)
+    pkg::send_text(writer, "next", 2)
+    let seen, seen_kind = pkg::recv_for(reader, sub, 2000)
+    say f"Sub: {seen} (type={seen_kind})"
+
     pkg::close_channel(writer)
     pkg::close_channel(reader)
     pkg::unlink_channel("orders")
@@ -116,6 +123,10 @@ main()
 | `send_bytes(slot, bytes, msg_type)` | `pub function` | Sends binary payload (NUL-safe); returns bytes written. |
 | `recv_bytes(slot, timeout_ms)` | `pub function` | Receives binary payload; `(bytes, type)`, null array on timeout. |
 | `call_text(req_slot, rep_slot, payload, msg_type, timeout_ms)` | `pub function` | Request/reply over a channel pair; `(reply, type)`. |
+| `subscribe(slot)` | `pub function` | Subscribes a broadcast reader; returns id (1-7). |
+| `unsubscribe(slot, reader)` | `pub function` | Removes a broadcast reader. |
+| `recv_for(slot, reader, timeout_ms)` | `pub function` | Receives for a reader; null payload on timeout. |
+| `peek_for(slot, reader, timeout_ms)` | `pub function` | Peeks for a reader without consuming. |
 | `channel_stats(slot)` | `pub function` | Reads shared `ShmStats` counters. |
 | `pending_bytes(slot)` | `pub function` | Buffered byte count, or -1 for invalid handles. |
 | `shm_open(name, capacity, overflow, polling_ms)` | `pub function` | Core open with explicit poll slice. |
@@ -130,6 +141,11 @@ main()
 | `shm_send_bytes(slot, bytes, msg_type, timeout_ms)` | `pub function` | Core binary send with explicit timeout. |
 | `shm_recv_bytes(slot, max_bytes, timeout_ms)` | `pub function` | Core binary receive with growing buffer. |
 | `shm_stats(slot)` | `pub function` | Core counter read returning `ShmStats`. |
+| `shm_subscribe(slot)` | `pub function` | Core subscribe returning reader id. |
+| `shm_unsubscribe(slot, reader)` | `pub function` | Core unsubscribe. |
+| `shm_recv_for(slot, reader, max_bytes, timeout_ms)` | `pub function` | Core reader receive. |
+| `shm_peek_for(slot, reader, max_bytes, timeout_ms)` | `pub function` | Core reader peek. |
+| `shm_reader_available(slot, reader)` | `pub function` | Buffered bytes for one reader. |
 | `shm_available(slot)` | `pub function` | Core buffered-bytes probe. |
 | `shm_config(name, capacity, overflow, polling_ms)` | `pub function` | Full config constructor. |
 | `shm_config_is_valid(cfg)` | `pub function` | True for usable configurations. |
@@ -143,7 +159,7 @@ main()
 | `ShmStats.summary()` | `pub method` | `"sent=N received=N dropped=N"` summary. |
 
 > [!TIP]
-> **Single Consumer:** One channel carries one shared read position, so each channel feeds a single consumer stream. Fan-out to N consumers needs N channels (one per consumer). Windows wakes receivers via events; POSIX receivers poll — tune `polling_ms` for your latency/CPU trade-off.
+> **Fan-Out:** One channel feeds the legacy default stream plus up to 7 subscribers, and every reader observes every message. A lagging reader pins the writer (backpressure in both overflow modes); under `Overwrite` pressure it misses dropped messages instead. Windows wakes receivers via events; POSIX receivers poll — tune `polling_ms` for your latency/CPU trade-off.
 
 ---
 

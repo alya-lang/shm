@@ -81,6 +81,23 @@ function main()
     pkg::close_channel(st_ch)
     pkg::unlink_channel("shm-demo-stats")
     say ""
+
+    # ───────────────────────────────────────────────────────────
+    # 5. Broadcast Fan-Out
+    # ───────────────────────────────────────────────────────────
+    say "--- 5. Broadcast Fan-Out ---"
+    pkg::unlink_channel("shm-demo-fanout")
+    let fan = pkg::open_channel("shm-demo-fanout")
+    pkg::send_text(fan, "news", 5)
+    let s1 = pkg::subscribe(fan)
+    let s2 = pkg::subscribe(fan)
+    let n1, k1 = pkg::recv_for(fan, s1, 2000)
+    let n2, k2 = pkg::recv_for(fan, s2, 2000)
+    say "Sub1: " + n1 + " (type=" + str(k1) + ")"
+    say "Sub2: " + n2 + " (type=" + str(k2) + ")"
+    pkg::close_channel(fan)
+    pkg::unlink_channel("shm-demo-fanout")
+    say ""
     say "Done!"
 end
 

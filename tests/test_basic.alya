@@ -312,6 +312,125 @@ function main()
     pkg::unlink_channel(req_name)
     pkg::unlink_channel(rep_name)
 
+    # ═══════════════════════════════════════════════════════════
+    # 8. Broadcast Subscribers
+    # ═══════════════════════════════════════════════════════════
+    let bc_name = chan("shm-test-broadcast")
+    pkg::unlink_channel(bc_name)
+    let bc = pkg::open_channel(bc_name)
+    pkg::send_text(bc, "alpha", 1)
+    pkg::send_text(bc, "beta", 2)
+    pkg::send_text(bc, "gamma", 3)
+
+    let r1 = pkg::shm_subscribe(bc)
+    let r2 = pkg::shm_subscribe(bc)
+    runner_assert_eq(r, r1, 1, "first subscriber id == 1")
+    runner_assert_eq(r, r2, 2, "second subscriber id == 2")
+
+    let bad_sub = false
+    try
+        pkg::shm_unsubscribe(bc, 9)
+    catch e
+        bad_sub = true
+    end
+    runner_assert_eq(r, bad_sub, true, "unsubscribe rejects out-of-range ids")
+
+    let a0, a0k = pkg::shm_recv_for(bc, r1, 65536, 2000)
+    let a1, a1k = pkg::shm_recv_for(bc, r1, 65536, 2000)
+    let a2, a2k = pkg::shm_recv_for(bc, r1, 65536, 2000)
+    runner_assert_str_eq(r, a0, "alpha", "subscriber 1 sees first message")
+    runner_assert_str_eq(r, a1, "beta", "subscriber 1 sees second message")
+    runner_assert_str_eq(r, a2, "gamma", "subscriber 1 sees third message")
+    runner_assert_eq(r, a2k, 3, "subscriber 1 keeps types")
+
+    let b0, b0k = pkg::shm_recv_for(bc, r2, 65536, 2000)
+    runner_assert_str_eq(r, b0, "alpha", "subscriber 2 sees same history (fan-out)")
+
+    let pk, pkk = pkg::shm_peek_for(bc, r2, 65536, 2000)
+    runner_assert_str_eq(r, pk, "beta", "peek_for previews without consuming")
+    runner_assert_eq(r, pkg::shm_reader_available(bc, r2), 41, "peek_for leaves 2 records queued")
+    let b1, b1k = pkg::shm_recv_for(bc, r2, 65536, 2000)
+    let b2, b2k = pkg::shm_recv_for(bc, r2, 65536, 2000)
+    runner_assert_str_eq(r, b1, "beta", "recv_for after peek returns same message")
+    runner_assert_str_eq(r, b2, "gamma", "subscriber 2 drains fully")
+
+    let l0, l0k = pkg::recv_text(bc, 2000)
+    runner_assert_str_eq(r, l0, "alpha", "legacy stream independent of subscribers")
+
+    runner_assert_eq(r, pkg::shm_unsubscribe(bc, r1), 0, "unsubscribe returns 0")
+    runner_assert_eq(r, pkg::shm_unsubscribe(bc, r1), 0, "unsubscribe is idempotent")
+    let gone = false
+    try
+        pkg::shm_recv_for(bc, r1, 65536, 200)
+    catch e
+        gone = true
+    end
+    runner_assert_eq(r, gone, true, "recv on unsubscribed reader throws")
+    pkg::close_channel(bc)
+    pkg::unlink_channel(bc_name)
+
+    let full_name = chan("shm-test-full")
+    pkg::unlink_channel(full_name)
+    let full = pkg::open_channel(full_name)
+    let s = 0
+    while s < 7
+        pkg::shm_subscribe(full)
+        s += 1
+    end
+    let overflow_sub = false
+    try
+        pkg::shm_subscribe(full)
+    catch e
+        overflow_sub = true
+    end
+    runner_assert_eq(r, overflow_sub, true, "8th subscriber throws (max 7)")
+    pkg::close_channel(full)
+    pkg::unlink_channel(full_name)
+
+    let lag_name = chan("shm-test-lag")
+    pkg::unlink_channel(lag_name)
+    let lag = pkg::open_channel(lag_name, 1024, pkg::ShmOverflow.Overwrite)
+    let slow = pkg::shm_subscribe(lag)
+    let q = 0
+    while q < 10
+        pkg::send_text(lag, padded("msg-" + str(q), 200), q)
+        q += 1
+    end
+    let lag_first, lag_first_k = pkg::shm_recv_for(lag, slow, 65536, 2000)
+    runner_assert(r, lag_first != padded("msg-0", 200), "lagging reader misses overwritten head")
+    let lag_seen = 1
+    let lag_last = lag_first
+    while true
+        let item, k = pkg::shm_recv_for(lag, slow, 65536, 200)
+        if item is null
+            break
+        end
+        lag_seen += 1
+        lag_last = item
+    end
+    runner_assert_eq(r, lag_seen, 4, "lagging reader clamped to surviving tail")
+    runner_assert_str_eq(r, lag_last, padded("msg-9", 200), "lagging reader ends at newest")
+    pkg::close_channel(lag)
+    pkg::unlink_channel(lag_name)
+
+    let pin_name = chan("shm-test-pin")
+    pkg::unlink_channel(pin_name)
+    let pin = pkg::open_channel(pin_name, 1024, pkg::ShmOverflow.Block)
+    let pinned = pkg::shm_subscribe(pin)
+    pkg::send_text(pin, padded("fill", 900))
+    let first_fill, fill_kind = pkg::recv_text(pin, 2000)
+    runner_assert_str_eq(r, first_fill, padded("fill", 900), "legacy stream drains")
+    let pin_blocked = false
+    try
+        pkg::shm_send(pin, padded("overflow", 200), 0, 300)
+    catch e
+        pin_blocked = true
+    end
+    runner_assert_eq(r, pin_blocked, true, "lagging subscriber pins block-mode writer")
+    runner_assert_eq(r, pkg::shm_reader_available(pin, pinned), 916, "subscriber still holds unread bytes")
+    pkg::close_channel(pin)
+    pkg::unlink_channel(pin_name)
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

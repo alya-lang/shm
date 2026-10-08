@@ -2,10 +2,13 @@
  * Part of the Alya Language package ecosystem (https://github.com/alya-lang).
  *
  * Layout of the mapped region (all native-endian integers):
- *   [0]  magic u64, [8] version u64 (= 2), [16] capacity u64,
- *   [24] write_pos u64, [32] read_pos u64,
+ *   [0]  magic u64, [8] version u64 (= 3), [16] capacity u64,
+ *   [24] write_pos u64, [32] read_pos u64 (reclamation frontier),
  *   [40] sent_count u64, [48] received_count u64, [56] dropped_count u64,
- *   [64..] data area of `capacity` bytes.
+ *   [64..191] reader table: 8 entries of [active u64][cursor u64].
+ *   Entry 0 is reserved for the legacy default stream; subscribe hands
+ *   out entries 1..7, each with an independent cursor for broadcast.
+ *   [192..] data area of `capacity` bytes.
  * Each message on the ring is [u64 payload_len][i64 msg_type][payload].
  *
  * Overflow modes: 0 = overwrite oldest, 1 = block until space frees up.
@@ -42,10 +45,13 @@
 
 #define ALYA_SHM_MAX_SLOTS 64
 #define ALYA_SHM_NAME_MAX 32
-#define ALYA_SHM_HEADER_SIZE 64
+#define ALYA_SHM_MAX_READERS 8
+#define ALYA_SHM_READER_ENTRY 16
+#define ALYA_SHM_READER_TABLE 64
+#define ALYA_SHM_HEADER_SIZE 192
 #define ALYA_SHM_RECORD_HEADER 16
 #define ALYA_SHM_MAGIC 0x004D4853594C41ULL
-#define ALYA_SHM_VERSION 2ULL
+#define ALYA_SHM_VERSION 3ULL
 #define ALYA_SHM_MIN_CAPACITY 1024ULL
 
 typedef struct {
@@ -307,6 +313,7 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
         write_u64(s->base, 40, 0);
         write_u64(s->base, 48, 0);
         write_u64(s->base, 56, 0);
+        memset(s->base + 64, 0, 128);
     } else {
         if (read_u64(s->base, 0) != ALYA_SHM_MAGIC ||
             read_u64(s->base, 8) != ALYA_SHM_VERSION) {
@@ -550,6 +557,7 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
         write_u64(s->base, 40, 0);
         write_u64(s->base, 48, 0);
         write_u64(s->base, 56, 0);
+        memset(s->base + 64, 0, 128);
     }
     unlock_slot(s);
     return slot;
@@ -615,6 +623,62 @@ int shm_unlink_channel(const char *name) {
 
 /* Shared send/receive over the mapped ring. Callers hold no lock. */
 
+static uint64_t reader_cursor(const unsigned char *base, int reader) {
+    return read_u64(base, ALYA_SHM_READER_TABLE + (uint64_t)reader * ALYA_SHM_READER_ENTRY + 8);
+}
+
+static void write_reader_cursor(unsigned char *base, int reader, uint64_t pos) {
+    write_u64(base, ALYA_SHM_READER_TABLE + (uint64_t)reader * ALYA_SHM_READER_ENTRY + 8, pos);
+}
+
+static int reader_active(const unsigned char *base, int reader) {
+    return read_u64(base, ALYA_SHM_READER_TABLE + (uint64_t)reader * ALYA_SHM_READER_ENTRY) != 0;
+}
+
+/* Bytes between pos and write_pos going forward (pos must be in-range). */
+static uint64_t ring_age(uint64_t write_pos, uint64_t pos, uint64_t cap) {
+    if (write_pos >= pos) {
+        return write_pos - pos;
+    }
+    return cap - pos + write_pos;
+}
+
+/* Oldest retained position: shared frontier floored by active cursors,
+ * so a lagging subscriber pins the writer (backpressure in both modes). */
+static uint64_t load_frontier(alya_shm_slot *s, uint64_t write_pos, uint64_t cap) {
+    uint64_t frontier = read_u64(s->base, 32);
+    uint64_t age_f = ring_age(write_pos, frontier, cap);
+    int i = 1;
+    while (i < ALYA_SHM_MAX_READERS) {
+        if (reader_active(s->base, i)) {
+            uint64_t c = reader_cursor(s->base, i);
+            uint64_t age_c = ring_age(write_pos, c, cap);
+            if (age_c > age_f) {
+                frontier = c;
+                age_f = age_c;
+            }
+        }
+        i++;
+    }
+    return frontier;
+}
+
+/* Pull cursors that the latest drops destroyed forward to the frontier. */
+static void clamp_cursors(alya_shm_slot *s, uint64_t write_pos, uint64_t cap,
+                          uint64_t frontier) {
+    uint64_t age_f = ring_age(write_pos, frontier, cap);
+    int i = 1;
+    while (i < ALYA_SHM_MAX_READERS) {
+        if (reader_active(s->base, i)) {
+            uint64_t c = reader_cursor(s->base, i);
+            if (ring_age(write_pos, c, cap) > age_f) {
+                write_reader_cursor(s->base, i, frontier);
+            }
+        }
+        i++;
+    }
+}
+
 static long long send_record(int slot, const unsigned char *data, uint64_t ulen,
                              int64_t mtype, int timeout_ms) {
     alya_shm_slot *s = 0;
@@ -654,8 +718,8 @@ static long long send_record(int slot, const unsigned char *data, uint64_t ulen,
             return -2;
         }
         write_pos = read_u64(s->base, 24);
-        read_pos = read_u64(s->base, 32);
-        used = ring_used(write_pos, read_pos, cap);
+        read_pos = load_frontier(s, write_pos, cap);
+        used = ring_age(write_pos, read_pos, cap);
         free = cap > used ? cap - used : 0;
         if (free >= need) {
             memcpy(header, &ulen, 8);
@@ -696,6 +760,7 @@ static long long send_record(int slot, const unsigned char *data, uint64_t ulen,
             }
             write_u64(s->base, 32, read_pos);
             write_u64(s->base, 56, read_u64(s->base, 56) + dropped);
+            clamp_cursors(s, write_pos, cap, read_pos);
             memcpy(header, &ulen, 8);
             memcpy(header + 8, &mtype, 8);
             ring_write(s->base, cap, write_pos % cap, header, ALYA_SHM_RECORD_HEADER);
@@ -747,7 +812,7 @@ long long shm_send_raw(int slot, const unsigned char *data, long long len,
 }
 
 static long long recv_record(int slot, char *buf, long long maxlen, long long *type_out,
-                            int timeout_ms, int consume) {
+                            int timeout_ms, int consume, int reader) {
     alya_shm_slot *s = 0;
     long waited = 0;
     int slice = 0;
@@ -770,7 +835,7 @@ static long long recv_record(int slot, char *buf, long long maxlen, long long *t
     while (1) {
         uint64_t cap = s->capacity;
         uint64_t write_pos = 0;
-        uint64_t read_pos = 0;
+        uint64_t pos = 0;
         uint64_t used = 0;
         unsigned char header[ALYA_SHM_RECORD_HEADER];
         uint64_t ulen = 0;
@@ -780,10 +845,25 @@ static long long recv_record(int slot, char *buf, long long maxlen, long long *t
             return -2;
         }
         write_pos = read_u64(s->base, 24);
-        read_pos = read_u64(s->base, 32);
-        used = ring_used(write_pos, read_pos, cap);
+        if (reader == 0) {
+            pos = read_u64(s->base, 32);
+        } else {
+            uint64_t frontier = 0;
+            if (!reader_active(s->base, reader)) {
+                unlock_slot(s);
+                set_error("shm: reader not subscribed");
+                return -1;
+            }
+            frontier = load_frontier(s, write_pos, cap);
+            pos = reader_cursor(s->base, reader);
+            if (ring_age(write_pos, pos, cap) > ring_age(write_pos, frontier, cap)) {
+                pos = frontier;
+                write_reader_cursor(s->base, reader, pos);
+            }
+        }
+        used = ring_age(write_pos, pos, cap);
         if (used >= ALYA_SHM_RECORD_HEADER) {
-            ring_read(s->base, cap, read_pos % cap, header, ALYA_SHM_RECORD_HEADER);
+            ring_read(s->base, cap, pos % cap, header, ALYA_SHM_RECORD_HEADER);
             memcpy(&ulen, header, 8);
             memcpy(&mtype, header + 8, 8);
             if (ulen + ALYA_SHM_RECORD_HEADER <= used && ulen <= cap) {
@@ -793,11 +873,16 @@ static long long recv_record(int slot, char *buf, long long maxlen, long long *t
                 }
                 if (ulen > 0) {
                     ring_read(s->base, cap,
-                              (read_pos + ALYA_SHM_RECORD_HEADER) % cap,
+                              (pos + ALYA_SHM_RECORD_HEADER) % cap,
                               buf, ulen);
                 }
                 if (consume) {
-                    write_u64(s->base, 32, (read_pos + ulen + ALYA_SHM_RECORD_HEADER) % cap);
+                    uint64_t next = (pos + ulen + ALYA_SHM_RECORD_HEADER) % cap;
+                    if (reader == 0) {
+                        write_u64(s->base, 32, next);
+                    } else {
+                        write_reader_cursor(s->base, reader, next);
+                    }
                     write_u64(s->base, 48, read_u64(s->base, 48) + 1);
                 }
                 unlock_slot(s);
@@ -818,12 +903,148 @@ static long long recv_record(int slot, char *buf, long long maxlen, long long *t
 
 long long shm_recv_message(int slot, char *buf, long long maxlen, long long *type_out,
                            int timeout_ms) {
-    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 1);
+    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 1, 0);
 }
 
 long long shm_peek_message(int slot, char *buf, long long maxlen, long long *type_out,
                             int timeout_ms) {
-    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 0);
+    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 0, 0);
+}
+
+long long shm_recv_reader(int slot, int reader, char *buf, long long maxlen,
+                         long long *type_out, int timeout_ms) {
+    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 1, reader);
+}
+
+long long shm_peek_reader(int slot, int reader, char *buf, long long maxlen,
+                         long long *type_out, int timeout_ms) {
+    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 0, reader);
+}
+
+int shm_subscribe_reader(int slot) {
+    alya_shm_slot *s = 0;
+    uint64_t read_pos = 0;
+    int i = 1;
+    if (!valid_slot(slot)) {
+        set_error("shm: invalid channel slot");
+        return -1;
+    }
+    s = &g_slots[slot];
+    if (lock_slot(s, 5000) != 0) {
+        set_error("shm: lock timeout during subscribe");
+        return -1;
+    }
+    read_pos = read_u64(s->base, 32);
+    while (i < ALYA_SHM_MAX_READERS) {
+        if (!reader_active(s->base, i)) {
+            write_u64(s->base, ALYA_SHM_READER_TABLE + (uint64_t)i * ALYA_SHM_READER_ENTRY, 1);
+            write_reader_cursor(s->base, i, read_pos);
+            unlock_slot(s);
+            return i;
+        }
+        i++;
+    }
+    unlock_slot(s);
+    set_error("shm: no free reader slots (max 7 subscribers)");
+    return -1;
+}
+
+int shm_unsubscribe_reader(int slot, int reader) {
+    alya_shm_slot *s = 0;
+    if (!valid_slot(slot)) {
+        set_error("shm: invalid channel slot");
+        return -1;
+    }
+    if (reader < 1 || reader >= ALYA_SHM_MAX_READERS) {
+        set_error("shm: invalid reader id");
+        return -1;
+    }
+    s = &g_slots[slot];
+    if (lock_slot(s, 5000) != 0) {
+        set_error("shm: lock timeout during unsubscribe");
+        return -1;
+    }
+    write_u64(s->base, ALYA_SHM_READER_TABLE + (uint64_t)reader * ALYA_SHM_READER_ENTRY, 0);
+    unlock_slot(s);
+    return 0;
+}
+
+long long shm_reader_available_bytes(int slot, int reader) {
+    alya_shm_slot *s = 0;
+    uint64_t write_pos = 0;
+    uint64_t pos = 0;
+    if (!valid_slot(slot)) {
+        return -1;
+    }
+    if (reader < 1 || reader >= ALYA_SHM_MAX_READERS) {
+        return -1;
+    }
+    s = &g_slots[slot];
+    if (lock_slot(s, 1000) != 0) {
+        return -1;
+    }
+    if (!reader_active(s->base, reader)) {
+        unlock_slot(s);
+        return -1;
+    }
+    write_pos = read_u64(s->base, 24);
+    pos = reader_cursor(s->base, reader);
+    {
+        uint64_t frontier = load_frontier(s, write_pos, s->capacity);
+        if (ring_age(write_pos, pos, s->capacity) > ring_age(write_pos, frontier, s->capacity)) {
+            pos = frontier;
+            write_reader_cursor(s->base, reader, pos);
+        }
+    }
+    {
+        long long used = (long long)ring_age(write_pos, pos, s->capacity);
+        unlock_slot(s);
+        return used;
+    }
+}
+
+long long shm_reader_message_len(int slot, int reader) {
+    alya_shm_slot *s = 0;
+    uint64_t write_pos = 0;
+    uint64_t pos = 0;
+    uint64_t used = 0;
+    unsigned char header[ALYA_SHM_RECORD_HEADER];
+    uint64_t ulen = 0;
+    if (!valid_slot(slot)) {
+        return -1;
+    }
+    if (reader < 1 || reader >= ALYA_SHM_MAX_READERS) {
+        return -1;
+    }
+    s = &g_slots[slot];
+    if (lock_slot(s, 1000) != 0) {
+        return -1;
+    }
+    if (!reader_active(s->base, reader)) {
+        unlock_slot(s);
+        return -1;
+    }
+    write_pos = read_u64(s->base, 24);
+    pos = reader_cursor(s->base, reader);
+    {
+        uint64_t frontier = load_frontier(s, write_pos, s->capacity);
+        if (ring_age(write_pos, pos, s->capacity) > ring_age(write_pos, frontier, s->capacity)) {
+            pos = frontier;
+            write_reader_cursor(s->base, reader, pos);
+        }
+    }
+    used = ring_age(write_pos, pos, s->capacity);
+    if (used >= ALYA_SHM_RECORD_HEADER) {
+        ring_read(s->base, s->capacity, pos % s->capacity, header,
+                  ALYA_SHM_RECORD_HEADER);
+        memcpy(&ulen, header, 8);
+        if (ulen + ALYA_SHM_RECORD_HEADER <= used && ulen <= s->capacity) {
+            unlock_slot(s);
+            return (long long)ulen;
+        }
+    }
+    unlock_slot(s);
+    return -2;
 }
 
 int shm_channel_stats(int slot, long long *out) {
