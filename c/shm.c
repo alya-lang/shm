@@ -407,7 +407,8 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
     size_t i = 0;
     size_t j = 0;
     sem_t *sem = SEM_FAILED;
-    int fd = -1;\r\n    struct stat st;
+    int fd = -1;
+    struct stat st;
     void *view = 0;
     uint64_t cap = 0;
     int slot = 0;
