@@ -123,3 +123,116 @@ end
 pub function pending_bytes(slot: int) -> int
     return shm_available(slot)
 end
+
+## Reads lifetime counters for the channel.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+##
+## ### Returns
+## `ShmStats` with sent, received, and dropped totals.
+##
+## ### Examples
+## ```alya
+## let st = channel_stats(ch)
+## say st.summary()
+## ```
+pub function channel_stats(slot: int) -> ShmStats
+    return shm_stats(slot)
+end
+
+## Reads the next message without consuming it.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload on timeout.
+pub function peek_text(slot: int, timeout_ms: int = 5000)
+    return shm_peek(slot, 65536, timeout_ms)
+end
+
+## Tries to send without waiting.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `payload`: Text payload (null becomes "").
+## - `msg_type`: Application message type (defaults to 0).
+##
+## ### Returns
+## Payload bytes written, or -1 when the send cannot complete.
+pub function try_send_text(slot: int, payload, msg_type: int = 0) -> int
+    return shm_try_send(slot, payload, msg_type)
+end
+
+## Tries to receive without waiting.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload when empty.
+pub function try_recv_text(slot: int)
+    return shm_try_recv(slot)
+end
+
+## Sends raw bytes (binary-safe, NUL bytes preserved).
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `bytes`: Integer array payload (each element 0-255).
+## - `msg_type`: Application message type (defaults to 0).
+##
+## ### Returns
+## Payload bytes written.
+##
+## ### Examples
+## ```alya
+## send_bytes(ch, [72, 0, 105], 9)
+## ```
+pub function send_bytes(slot: int, bytes, msg_type: int = 0) -> int
+    return shm_send_bytes(slot, bytes, msg_type)
+end
+
+## Receives raw bytes (binary-safe, NUL bytes preserved).
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(bytes, msg_type)` tuple with null array on timeout.
+##
+## ### Examples
+## ```alya
+## let raw, kind = recv_bytes(ch, 1000)
+## ```
+pub function recv_bytes(slot: int, timeout_ms: int = 5000)
+    return shm_recv_bytes(slot, 65536, timeout_ms)
+end
+
+## Calls a service over a request/reply channel pair.
+##
+## Sends on `req_slot`, then waits for the reply on `rep_slot`
+## (two channels are needed because each channel feeds a single
+## consumer stream). Match replies by `msg_type` echo convention.
+##
+## ### Parameters
+## - `req_slot`: Request channel slot handle.
+## - `rep_slot`: Reply channel slot handle.
+## - `payload`: Request text payload.
+## - `msg_type`: Correlation type echoed back in the reply (defaults to 0).
+## - `timeout_ms`: Maximum wait per leg in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(reply, reply_type)` tuple with null payload on reply timeout.
+##
+## ### Examples
+## ```alya
+## let answer, kind = call_text(req, rep, "compute:6*7", 7)
+## ```
+pub function call_text(req_slot: int, rep_slot: int, payload, msg_type: int = 0, timeout_ms: int = 5000)
+    shm_send(req_slot, payload, msg_type, timeout_ms)
+    return shm_recv(rep_slot, 65536, timeout_ms)
+end

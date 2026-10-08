@@ -45,6 +45,21 @@ pub struct ShmError
     code: int
 end
 
+## Lifetime counters for one channel, read from the shared header.
+##
+## Counters accumulate across every handle on the channel until the
+## segment is unlinked and recreated.
+##
+## ### Fields
+## - `sent`: Messages accepted by the ring.
+## - `received`: Messages consumed by receivers.
+## - `dropped`: Messages discarded by the Overwrite policy.
+pub struct ShmStats
+    sent: int,
+    received: int,
+    dropped: int
+end
+
 # ───────────────────────────────────────────────────────────────
 # Constructors & Validation
 # ───────────────────────────────────────────────────────────────
@@ -122,4 +137,26 @@ end
 ## Formatted `"name (capacity bytes, overflow=N)"` summary.
 pub function ShmConfig.summary(self: ShmConfig) -> string
     return "{self.name} ({self.capacity} bytes, overflow={self.overflow})"
+end
+
+## Returns the total messages accepted by the channel.
+##
+## ### Parameters
+## - `self`: The target `ShmStats` instance.
+##
+## ### Returns
+## Sum of received and dropped messages (what came out plus what was lost).
+pub function ShmStats.accounted(self: ShmStats) -> int
+    return self.received + self.dropped
+end
+
+## Returns a single-line summary of the counters.
+##
+## ### Parameters
+## - `self`: The target `ShmStats` instance.
+##
+## ### Returns
+## Formatted `"sent=N received=N dropped=N"` summary.
+pub function ShmStats.summary(self: ShmStats) -> string
+    return "sent={self.sent} received={self.received} dropped={self.dropped}"
 end

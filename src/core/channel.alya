@@ -135,6 +135,74 @@ pub function shm_send(slot: int, payload, msg_type: int = 0, timeout_ms: int = 5
     return n
 end
 
+# Drains one message from the channel with (consume = 1) or without
+# (consume = 0) advancing the shared read position.
+# Returns (payload, msg_type) with null payload on timeout.
+function drain_message(slot: int, max_bytes: int, timeout_ms: int, consume: int)
+    if slot < 0
+        throw ShmError { message: "shm: invalid channel slot", code: 3 }
+    end
+    let limit = max_bytes
+    if limit <= 0
+        limit = 65536
+    end
+    let t = timeout_ms
+    if t < 0
+        t = 0
+    end
+    let need = shm_next_message_len(slot)
+    let size = limit
+    if need > size
+        size = need
+    end
+    if size <= 0
+        size = limit
+    end
+    let buf = alloc_mem(size + 1)
+    let type_slot = alloc_zeroed(8)
+    let attempt = 0
+    while attempt < 2
+        let n = -2
+        if consume == 1
+            n = shm_recv_message(slot, buf, size, type_slot, t)
+        else
+            n = shm_peek_message(slot, buf, size, type_slot, t)
+        end
+        if n == -2
+            free_mem(buf)
+            free_mem(type_slot)
+            return null, 0
+        end
+        if n == -3
+            free_mem(buf)
+            free_mem(type_slot)
+            let retry_need = shm_next_message_len(slot)
+            size = limit
+            if retry_need > size
+                size = retry_need
+            end
+            buf = alloc_mem(size + 1)
+            type_slot = alloc_zeroed(8)
+            attempt += 1
+            continue
+        end
+        if n < 0
+            free_mem(buf)
+            free_mem(type_slot)
+            throw ShmError { message: shm_last_error(), code: 5 }
+        end
+        write_byte(buf, n, 0)
+        let payload = string_clone(to_string(buf))
+        let kind = read_int(type_slot, 0)
+        free_mem(buf)
+        free_mem(type_slot)
+        return payload, kind
+    end
+    free_mem(buf)
+    free_mem(type_slot)
+    throw ShmError { message: "shm: receive buffer too small", code: 5 }
+end
+
 ## Receives the next message from the channel.
 ##
 ## Returns a `(payload, msg_type)` tuple; the payload is null on timeout
@@ -148,6 +216,159 @@ end
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
 pub function shm_recv(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
+    return drain_message(slot, max_bytes, timeout_ms, 1)
+end
+
+## Reads the next message without consuming it.
+##
+## The message stays queued for a later `shm_recv`; counters are
+## untouched. Returns `(payload, msg_type)` with null payload on timeout.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `max_bytes`: Initial receive buffer in bytes (grows as needed, defaults to 65536).
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload on timeout.
+pub function shm_peek(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
+    return drain_message(slot, max_bytes, timeout_ms, 0)
+end
+
+## Tries to receive without waiting.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `max_bytes`: Initial receive buffer in bytes (defaults to 65536).
+##
+## ### Returns
+## `(payload, msg_type)` tuple with null payload when empty.
+pub function shm_try_recv(slot: int, max_bytes: int = 65536)
+    return drain_message(slot, max_bytes, 0, 1)
+end
+
+## Tries to send without waiting.
+##
+## Never blocks: reports -1 instead of sending when the channel is full
+## or any fault occurs.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `payload`: Text payload (null becomes "").
+## - `msg_type`: Application message type (defaults to 0).
+##
+## ### Returns
+## Payload bytes written, or -1 when the send cannot complete.
+pub function shm_try_send(slot: int, payload, msg_type: int = 0) -> int
+    try
+        return shm_send(slot, payload, msg_type, 0)
+    catch e
+        return -1
+    end
+end
+
+## Returns the bytes currently waiting in the channel.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+##
+## ### Returns
+## Buffered byte count, or -1 for invalid handles.
+pub function shm_available(slot: int) -> int
+    if slot < 0
+        return -1
+    end
+    return shm_available_bytes(slot)
+end
+
+## Reads lifetime counters for the channel.
+##
+## Counters accumulate across every handle until the segment is
+## unlinked and recreated.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+##
+## ### Returns
+## `ShmStats` with sent, received, and dropped totals.
+pub function shm_stats(slot: int) -> ShmStats
+    if slot < 0
+        throw ShmError { message: "shm: invalid channel slot", code: 3 }
+    end
+    let out = alloc_zeroed(24)
+    let rc = shm_channel_stats(slot, out)
+    if rc != 0
+        free_mem(out)
+        throw ShmError { message: "shm: invalid channel slot", code: 3 }
+    end
+    let st = ShmStats { sent: read_int(out, 0), received: read_int(out, 8), dropped: read_int(out, 16) }
+    free_mem(out)
+    return st
+end
+
+## Sends raw bytes (binary-safe, NUL bytes preserved).
+##
+## Elements outside 0-255 throw `ShmError`; an empty or null array sends
+## a zero-length message.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `bytes`: Integer array payload (each element 0-255).
+## - `msg_type`: Application message type (defaults to 0).
+## - `timeout_ms`: Maximum wait in Block mode (defaults to 5000).
+##
+## ### Returns
+## Payload bytes written.
+pub function shm_send_bytes(slot: int, bytes, msg_type: int = 0, timeout_ms: int = 5000) -> int
+    if slot < 0
+        throw ShmError { message: "shm: invalid channel slot", code: 3 }
+    end
+    let n = 0
+    if bytes is not null
+        n = len(bytes)
+    end
+    if n == 0
+        return shm_send(slot, "", msg_type, timeout_ms)
+    end
+    let t = timeout_ms
+    if t < 0
+        t = 0
+    end
+    let buf = alloc_mem(n)
+    let i = 0
+    while i < n
+        let b = bytes[i]
+        if b < 0 or b > 255
+            free_mem(buf)
+            throw ShmError { message: "shm: byte value out of range (0-255)", code: 1 }
+        end
+        write_byte(buf, i, b)
+        i += 1
+    end
+    let sent = shm_send_raw(slot, buf, n, msg_type, t)
+    free_mem(buf)
+    if sent == -2
+        throw ShmError { message: shm_last_error(), code: 4 }
+    end
+    if sent < 0
+        throw ShmError { message: shm_last_error(), code: 5 }
+    end
+    return sent
+end
+
+## Receives raw bytes (binary-safe, NUL bytes preserved).
+##
+## Returns a `(bytes, msg_type)` tuple; the array is null on timeout so
+## callers can tell "no message yet" apart from an empty message.
+##
+## ### Parameters
+## - `slot`: Channel slot handle.
+## - `max_bytes`: Initial receive buffer in bytes (grows as needed, defaults to 65536).
+## - `timeout_ms`: Maximum wait in milliseconds (defaults to 5000).
+##
+## ### Returns
+## `(bytes, msg_type)` tuple with null array on timeout.
+pub function shm_recv_bytes(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
     if slot < 0
         throw ShmError { message: "shm: invalid channel slot", code: 3 }
     end
@@ -195,28 +416,18 @@ pub function shm_recv(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
             free_mem(type_slot)
             throw ShmError { message: shm_last_error(), code: 5 }
         end
-        write_byte(buf, n, 0)
-        let payload = string_clone(to_string(buf))
+        let out = []
+        let i = 0
+        while i < n
+            out.push(read_byte(buf, i))
+            i += 1
+        end
         let kind = read_int(type_slot, 0)
         free_mem(buf)
         free_mem(type_slot)
-        return payload, kind
+        return out, kind
     end
     free_mem(buf)
     free_mem(type_slot)
     throw ShmError { message: "shm: receive buffer too small", code: 5 }
-end
-
-## Returns the bytes currently waiting in the channel.
-##
-## ### Parameters
-## - `slot`: Channel slot handle.
-##
-## ### Returns
-## Buffered byte count, or -1 for invalid handles.
-pub function shm_available(slot: int) -> int
-    if slot < 0
-        return -1
-    end
-    return shm_available_bytes(slot)
 end

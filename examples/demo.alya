@@ -63,6 +63,24 @@ function main()
     pkg::close_channel(ch)
     pkg::unlink_channel("shm-demo-pressure")
     say ""
+
+    # ───────────────────────────────────────────────────────────
+    # 4. Statistics & Binary Bytes
+    # ───────────────────────────────────────────────────────────
+    say "--- 4. Statistics & Binary Bytes ---"
+    pkg::unlink_channel("shm-demo-stats")
+    let st_ch = pkg::open_channel("shm-demo-stats")
+    pkg::send_text(st_ch, "alpha", 1)
+    pkg::send_bytes(st_ch, [72, 0, 105], 9)
+    let st = pkg::channel_stats(st_ch)
+    say "Stats: " + st.summary()
+    let first, first_kind = pkg::recv_text(st_ch, 2000)
+    say "Text:  " + first + " (type=" + str(first_kind) + ")"
+    let raw, raw_kind = pkg::recv_bytes(st_ch, 2000)
+    say "Bytes: len=" + str(len(raw)) + " type=" + str(raw_kind) + " zero_ok=" + str(raw[1] == 0)
+    pkg::close_channel(st_ch)
+    pkg::unlink_channel("shm-demo-stats")
+    say ""
     say "Done!"
 end
 

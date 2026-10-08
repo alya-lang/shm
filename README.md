@@ -14,8 +14,10 @@ Shared-memory messaging for Alya: memory-mapped ring-buffer channels for fast lo
 - ⚡ **Zero-Copy Local Messaging**: Memory-mapped ring buffer shared between processes — no sockets, no kernel copies on the hot path (~3µs roundtrips)
 - 🔌 **Native Cross-Platform Engine**: Bundled zero-dependency C engine (`c/shm.c`) — Windows file mappings with named mutex/event, POSIX `shm_open` with named semaphores
 - 🔒 **True Cross-Process Locking**: Semaphore/mutex-guarded positions on every platform (no local-only locks)
-- 🧩 **Binary-Framed Records**: `[len][type][payload]` records with wraparound handling; UTF-8 payloads of any size up to capacity
+- 🧩 **Binary-Framed Records**: `[len][type][payload]` records with wraparound handling; UTF-8 text plus binary byte arrays (NUL-safe)
 - 🎯 **Overflow Policies**: `Overwrite` drops oldest messages under pressure, `Block` waits for the reader with a timeout
+- 🔭 **Peek, Try-Ops & Stats**: Non-consuming reads, non-blocking variants, and shared lifetime counters (`sent`/`received`/`dropped`)
+- 🤝 **Request/Reply Helper**: Two-channel call pattern with correlation types for service-style messaging
 - 🛡️ **Defensive Result Pattern**: Structured `ShmError` throws for bad names, capacity mismatches, oversize messages, and timeouts
 - 🧪 **Enterprise Test & Benchmark Suite**: Dual-handle roundtrips, overwrite math, block timeouts, and mismatch coverage with standard assertions (`std/test`)
 
@@ -108,6 +110,13 @@ main()
 | `unlink_channel(name)` | `pub function` | Removes a stale segment (needed on POSIX after crashes). |
 | `send_text(slot, payload, msg_type)` | `pub function` | Sends one message; returns payload bytes written. |
 | `recv_text(slot, timeout_ms)` | `pub function` | Receives next message; `(payload, type)` with null payload on timeout. |
+| `peek_text(slot, timeout_ms)` | `pub function` | Reads next message without consuming; null payload on timeout. |
+| `try_send_text(slot, payload, msg_type)` | `pub function` | Non-blocking send; bytes written or -1. |
+| `try_recv_text(slot)` | `pub function` | Non-blocking receive; null payload when empty. |
+| `send_bytes(slot, bytes, msg_type)` | `pub function` | Sends binary payload (NUL-safe); returns bytes written. |
+| `recv_bytes(slot, timeout_ms)` | `pub function` | Receives binary payload; `(bytes, type)`, null array on timeout. |
+| `call_text(req_slot, rep_slot, payload, msg_type, timeout_ms)` | `pub function` | Request/reply over a channel pair; `(reply, type)`. |
+| `channel_stats(slot)` | `pub function` | Reads shared `ShmStats` counters. |
 | `pending_bytes(slot)` | `pub function` | Buffered byte count, or -1 for invalid handles. |
 | `shm_open(name, capacity, overflow, polling_ms)` | `pub function` | Core open with explicit poll slice. |
 | `shm_open_config(cfg)` | `pub function` | Core open from a validated config. |
@@ -115,6 +124,12 @@ main()
 | `shm_unlink(name)` | `pub function` | Core unlink. |
 | `shm_send(slot, payload, msg_type, timeout_ms)` | `pub function` | Core send with explicit timeout. |
 | `shm_recv(slot, max_bytes, timeout_ms)` | `pub function` | Core receive with growing buffer. |
+| `shm_peek(slot, max_bytes, timeout_ms)` | `pub function` | Core peek without consuming. |
+| `shm_try_send(slot, payload, msg_type)` | `pub function` | Core non-blocking send. |
+| `shm_try_recv(slot, max_bytes)` | `pub function` | Core non-blocking receive. |
+| `shm_send_bytes(slot, bytes, msg_type, timeout_ms)` | `pub function` | Core binary send with explicit timeout. |
+| `shm_recv_bytes(slot, max_bytes, timeout_ms)` | `pub function` | Core binary receive with growing buffer. |
+| `shm_stats(slot)` | `pub function` | Core counter read returning `ShmStats`. |
 | `shm_available(slot)` | `pub function` | Core buffered-bytes probe. |
 | `shm_config(name, capacity, overflow, polling_ms)` | `pub function` | Full config constructor. |
 | `shm_config_is_valid(cfg)` | `pub function` | True for usable configurations. |
@@ -123,6 +138,9 @@ main()
 | `ShmConfig.is_valid()` | `pub method` | True for usable configurations. |
 | `ShmConfig.summary()` | `pub method` | `"name (capacity bytes, overflow=N)"` summary. |
 | `ShmError` | `pub struct` | Thrown failure (`message`, `code`). |
+| `ShmStats` | `pub struct` | Lifetime counters (`sent`, `received`, `dropped`). |
+| `ShmStats.accounted()` | `pub method` | Sum of received and dropped messages. |
+| `ShmStats.summary()` | `pub method` | `"sent=N received=N dropped=N"` summary. |
 
 > [!TIP]
 > **Single Consumer:** One channel carries one shared read position, so each channel feeds a single consumer stream. Fan-out to N consumers needs N channels (one per consumer). Windows wakes receivers via events; POSIX receivers poll — tune `polling_ms` for your latency/CPU trade-off.

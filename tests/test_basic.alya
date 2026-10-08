@@ -194,6 +194,124 @@ function main()
     pkg::close_channel(hg)
     pkg::unlink_channel(hg_name)
 
+    # ═══════════════════════════════════════════════════════════
+    # 7. Statistics, Peek, Try Ops, Bytes & Call Pattern
+    # ═══════════════════════════════════════════════════════════
+    let st_name = chan("shm-test-stats")
+    pkg::unlink_channel(st_name)
+    let st_ch = pkg::open_channel(st_name)
+    let zero = pkg::channel_stats(st_ch)
+    runner_assert_eq(r, zero.sent, 0, "fresh channel sent == 0")
+    runner_assert_eq(r, zero.received, 0, "fresh channel received == 0")
+    runner_assert_eq(r, zero.dropped, 0, "fresh channel dropped == 0")
+
+    pkg::send_text(st_ch, "one", 1)
+    pkg::send_text(st_ch, "two", 2)
+    pkg::send_text(st_ch, "three", 3)
+    let after_send = pkg::channel_stats(st_ch)
+    runner_assert_eq(r, after_send.sent, 3, "sent counts accepted messages")
+    runner_assert_eq(r, after_send.received, 0, "nothing received yet")
+
+    let peeked, peek_kind = pkg::shm_peek(st_ch, 65536, 2000)
+    runner_assert_str_eq(r, peeked, "one", "peek returns head message")
+    runner_assert_eq(r, peek_kind, 1, "peek preserves message type")
+    runner_assert_eq(r, pkg::pending_bytes(st_ch), 59, "peek does not consume")
+    let peek_stats = pkg::channel_stats(st_ch)
+    runner_assert_eq(r, peek_stats.received, 0, "peek does not count as received")
+
+    let first_got, first_kind = pkg::recv_text(st_ch, 2000)
+    runner_assert_str_eq(r, first_got, "one", "recv after peek returns same message")
+    runner_assert_eq(r, first_kind, 1, "recv after peek keeps type")
+
+    let try_sent = pkg::shm_try_send(st_ch, "four", 4)
+    runner_assert(r, try_sent > 0, "try_send delivers bytes")
+    let try_got, try_kind = pkg::shm_try_recv(st_ch)
+    runner_assert_str_eq(r, try_got, "two", "try_recv reads queued message")
+    runner_assert_eq(r, try_kind, 2, "try_recv keeps type")
+    let try_empty, try_empty_kind = pkg::shm_try_recv(st_ch)
+    runner_assert_eq(r, try_empty is null, false, "messages still queued")
+    runner_assert_str_eq(r, try_empty, "three", "queued order preserved")
+    pkg::recv_text(st_ch, 2000)
+    let try_idle, try_idle_kind = pkg::shm_try_recv(st_ch)
+    runner_assert_eq(r, try_idle is null, true, "try_recv on empty returns null")
+
+    let consumed = pkg::channel_stats(st_ch)
+    runner_assert_eq(r, consumed.sent, 4, "total sent == 4")
+    runner_assert_eq(r, consumed.received, 4, "total received == 4")
+    runner_assert_eq(r, consumed.dropped, 0, "no drops without pressure")
+    runner_assert_str_eq(r, consumed.summary(), "sent=4 received=4 dropped=0", "stats summary format")
+    pkg::close_channel(st_ch)
+    pkg::unlink_channel(st_name)
+
+    let ow2_name = chan("shm-test-drops")
+    pkg::unlink_channel(ow2_name)
+    let ow2 = pkg::open_channel(ow2_name, 1024, pkg::ShmOverflow.Overwrite)
+    let w = 0
+    while w < 10
+        pkg::send_text(ow2, padded("msg-" + str(w), 200), w)
+        w += 1
+    end
+    while true
+        let item, k = pkg::recv_text(ow2, 200)
+        if item is null
+            break
+        end
+    end
+    let drops = pkg::channel_stats(ow2)
+    runner_assert_eq(r, drops.sent, 10, "overwrite run sent == 10")
+    runner_assert_eq(r, drops.received, 4, "overwrite run received == 4")
+    runner_assert_eq(r, drops.dropped, 6, "overwrite run dropped == 6")
+    pkg::close_channel(ow2)
+    pkg::unlink_channel(ow2_name)
+
+    let bin_name = chan("shm-test-bytes")
+    pkg::unlink_channel(bin_name)
+    let bin = pkg::open_channel(bin_name)
+    let bin_sent = pkg::send_bytes(bin, [72, 0, 105, 0], 9)
+    runner_assert_eq(r, bin_sent, 4, "send_bytes returns byte count")
+    let raw, raw_kind = pkg::recv_bytes(bin, 2000)
+    runner_assert_eq(r, len(raw), 4, "recv_bytes length preserved")
+    runner_assert_eq(r, raw[0], 72, "byte 0 intact")
+    runner_assert_eq(r, raw[1], 0, "embedded zero preserved")
+    runner_assert_eq(r, raw[2], 105, "byte 2 intact")
+    runner_assert_eq(r, raw[3], 0, "trailing zero preserved")
+    runner_assert_eq(r, raw_kind, 9, "bytes message type roundtrips")
+
+    let bad_byte = false
+    try
+        pkg::send_bytes(bin, [300])
+    catch e
+        bad_byte = true
+    end
+    runner_assert_eq(r, bad_byte, true, "byte value above 255 throws")
+
+    pkg::send_bytes(bin, [])
+    let empty_raw, empty_kind = pkg::recv_bytes(bin, 2000)
+    runner_assert_eq(r, empty_raw is null, false, "empty byte message is not a timeout")
+    runner_assert_eq(r, len(empty_raw), 0, "empty byte message has length 0")
+    pkg::close_channel(bin)
+    pkg::unlink_channel(bin_name)
+
+    let req_name = chan("shm-test-req")
+    let rep_name = chan("shm-test-rep")
+    pkg::unlink_channel(req_name)
+    pkg::unlink_channel(rep_name)
+    let req = pkg::open_channel(req_name)
+    let rep = pkg::open_channel(rep_name)
+    let rep_reader = pkg::open_channel(rep_name)
+    pkg::shm_send(req, "compute:6*7", 7, 5000)
+    let asked, asked_kind = pkg::shm_recv(req, 65536, 2000)
+    runner_assert_str_eq(r, asked, "compute:6*7", "service received request")
+    pkg::shm_send(rep, "answer:42", asked_kind, 5000)
+    let answer, answer_kind = pkg::call_text(req, rep_reader, "ping", 1, 2000)
+    runner_assert_str_eq(r, answer, "answer:42", "call returns queued reply")
+    runner_assert_eq(r, answer_kind, 7, "call preserves correlation type")
+    pkg::close_channel(req)
+    pkg::close_channel(rep)
+    pkg::close_channel(rep_reader)
+    pkg::unlink_channel(req_name)
+    pkg::unlink_channel(rep_name)
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

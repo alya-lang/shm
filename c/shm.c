@@ -2,8 +2,9 @@
  * Part of the Alya Language package ecosystem (https://github.com/alya-lang).
  *
  * Layout of the mapped region (all native-endian integers):
- *   [0]  magic u64, [8] version u64, [16] capacity u64,
- *   [24] write_pos u64, [32] read_pos u64, [40..63] reserved,
+ *   [0]  magic u64, [8] version u64 (= 2), [16] capacity u64,
+ *   [24] write_pos u64, [32] read_pos u64,
+ *   [40] sent_count u64, [48] received_count u64, [56] dropped_count u64,
  *   [64..] data area of `capacity` bytes.
  * Each message on the ring is [u64 payload_len][i64 msg_type][payload].
  *
@@ -44,7 +45,7 @@
 #define ALYA_SHM_HEADER_SIZE 64
 #define ALYA_SHM_RECORD_HEADER 16
 #define ALYA_SHM_MAGIC 0x004D4853594C41ULL
-#define ALYA_SHM_VERSION 1ULL
+#define ALYA_SHM_VERSION 2ULL
 #define ALYA_SHM_MIN_CAPACITY 1024ULL
 
 typedef struct {
@@ -303,6 +304,9 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
         write_u64(s->base, 16, cap);
         write_u64(s->base, 24, 0);
         write_u64(s->base, 32, 0);
+        write_u64(s->base, 40, 0);
+        write_u64(s->base, 48, 0);
+        write_u64(s->base, 56, 0);
     } else {
         if (read_u64(s->base, 0) != ALYA_SHM_MAGIC ||
             read_u64(s->base, 8) != ALYA_SHM_VERSION) {
@@ -543,6 +547,9 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
         write_u64(s->base, 16, cap);
         write_u64(s->base, 24, 0);
         write_u64(s->base, 32, 0);
+        write_u64(s->base, 40, 0);
+        write_u64(s->base, 48, 0);
+        write_u64(s->base, 56, 0);
     }
     unlock_slot(s);
     return slot;
@@ -608,9 +615,9 @@ int shm_unlink_channel(const char *name) {
 
 /* Shared send/receive over the mapped ring. Callers hold no lock. */
 
-long long shm_send_message(int slot, const char *data, long long msg_type, int timeout_ms) {
+static long long send_record(int slot, const unsigned char *data, uint64_t ulen,
+                             int64_t mtype, int timeout_ms) {
     alya_shm_slot *s = 0;
-    size_t len = 0;
     uint64_t need = 0;
     uint64_t cap = 0;
     uint64_t write_pos = 0;
@@ -620,21 +627,14 @@ long long shm_send_message(int slot, const char *data, long long msg_type, int t
     long waited = 0;
     int slice = 0;
     unsigned char header[ALYA_SHM_RECORD_HEADER];
-    uint64_t ulen = 0;
-    int64_t mtype = 0;
     if (!valid_slot(slot)) {
         set_error("shm: invalid channel slot");
         return -1;
     }
     s = &g_slots[slot];
     if (data == 0) {
-        data = "";
+        data = (const unsigned char *)"";
     }
-    while (data[len] != '\0') {
-        len++;
-    }
-    ulen = (uint64_t)len;
-    mtype = (int64_t)msg_type;
     need = ulen + ALYA_SHM_RECORD_HEADER;
     cap = s->capacity;
     if (need > cap) {
@@ -666,14 +666,16 @@ long long shm_send_message(int slot, const char *data, long long msg_type, int t
                            data, ulen);
             }
             write_u64(s->base, 24, (write_pos + need) % cap);
+            write_u64(s->base, 40, read_u64(s->base, 40) + 1);
             unlock_slot(s);
 #ifdef _WIN32
             SetEvent(s->h_event);
 #endif
-            return (long long)len;
+            return (long long)ulen;
         }
         if (s->overflow == 0) {
             /* Overwrite: drop oldest messages until the record fits. */
+            uint64_t dropped = 0;
             while (free < need) {
                 uint64_t oldest_len = 0;
                 uint64_t oldest_total = 0;
@@ -688,10 +690,12 @@ long long shm_send_message(int slot, const char *data, long long msg_type, int t
                 }
                 oldest_total = oldest_len + ALYA_SHM_RECORD_HEADER;
                 read_pos = (read_pos + oldest_total) % cap;
+                dropped++;
                 used = ring_used(write_pos, read_pos, cap);
                 free = cap > used ? cap - used : 0;
             }
             write_u64(s->base, 32, read_pos);
+            write_u64(s->base, 56, read_u64(s->base, 56) + dropped);
             memcpy(header, &ulen, 8);
             memcpy(header + 8, &mtype, 8);
             ring_write(s->base, cap, write_pos % cap, header, ALYA_SHM_RECORD_HEADER);
@@ -700,11 +704,12 @@ long long shm_send_message(int slot, const char *data, long long msg_type, int t
                            data, ulen);
             }
             write_u64(s->base, 24, (write_pos + need) % cap);
+            write_u64(s->base, 40, read_u64(s->base, 40) + 1);
             unlock_slot(s);
 #ifdef _WIN32
             SetEvent(s->h_event);
 #endif
-            return (long long)len;
+            return (long long)ulen;
         }
         unlock_slot(s);
         if (waited >= timeout_ms) {
@@ -716,8 +721,33 @@ long long shm_send_message(int slot, const char *data, long long msg_type, int t
     }
 }
 
-long long shm_recv_message(int slot, char *buf, long long maxlen, long long *type_out,
-                           int timeout_ms) {
+long long shm_send_message(int slot, const char *data, long long msg_type, int timeout_ms) {
+    size_t len = 0;
+    if (data == 0) {
+        data = "";
+    }
+    while (data[len] != '\0') {
+        len++;
+    }
+    return send_record(slot, (const unsigned char *)data, (uint64_t)len,
+                       (int64_t)msg_type, timeout_ms);
+}
+
+long long shm_send_raw(int slot, const unsigned char *data, long long len,
+                      long long msg_type, int timeout_ms) {
+    if (data == 0 && len != 0) {
+        set_error("shm: null byte buffer");
+        return -1;
+    }
+    if (len < 0) {
+        set_error("shm: negative byte length");
+        return -1;
+    }
+    return send_record(slot, data, (uint64_t)len, (int64_t)msg_type, timeout_ms);
+}
+
+static long long recv_record(int slot, char *buf, long long maxlen, long long *type_out,
+                            int timeout_ms, int consume) {
     alya_shm_slot *s = 0;
     long waited = 0;
     int slice = 0;
@@ -766,7 +796,10 @@ long long shm_recv_message(int slot, char *buf, long long maxlen, long long *typ
                               (read_pos + ALYA_SHM_RECORD_HEADER) % cap,
                               buf, ulen);
                 }
-                write_u64(s->base, 32, (read_pos + ulen + ALYA_SHM_RECORD_HEADER) % cap);
+                if (consume) {
+                    write_u64(s->base, 32, (read_pos + ulen + ALYA_SHM_RECORD_HEADER) % cap);
+                    write_u64(s->base, 48, read_u64(s->base, 48) + 1);
+                }
                 unlock_slot(s);
                 if (type_out != 0) {
                     *type_out = (long long)mtype;
@@ -781,6 +814,36 @@ long long shm_recv_message(int slot, char *buf, long long maxlen, long long *typ
         wait_for_data(s, slice);
         waited += slice;
     }
+}
+
+long long shm_recv_message(int slot, char *buf, long long maxlen, long long *type_out,
+                           int timeout_ms) {
+    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 1);
+}
+
+long long shm_peek_message(int slot, char *buf, long long maxlen, long long *type_out,
+                            int timeout_ms) {
+    return recv_record(slot, buf, maxlen, type_out, timeout_ms, 0);
+}
+
+int shm_channel_stats(int slot, long long *out) {
+    alya_shm_slot *s = 0;
+    if (!valid_slot(slot)) {
+        return -1;
+    }
+    s = &g_slots[slot];
+    if (out == 0) {
+        set_error("shm: null stats buffer");
+        return -1;
+    }
+    if (lock_slot(s, 1000) != 0) {
+        return -1;
+    }
+    out[0] = (long long)read_u64(s->base, 40);
+    out[1] = (long long)read_u64(s->base, 48);
+    out[2] = (long long)read_u64(s->base, 56);
+    unlock_slot(s);
+    return 0;
 }
 
 long long shm_available_bytes(int slot) {

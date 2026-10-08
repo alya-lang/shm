@@ -32,6 +32,23 @@ function main()
     pkg::close_channel(reader)
     pkg::unlink_channel("shm-bench")
 
+    # Bench 3: bytes roundtrip - 5k iterations
+    pkg::unlink_channel("shm-bench-bytes")
+    let bwriter = pkg::open_channel("shm-bench-bytes", 1048576, pkg::ShmOverflow.Overwrite)
+    let breader = pkg::open_channel("shm-bench-bytes", 1048576, pkg::ShmOverflow.Overwrite)
+    let payload = [72, 0, 105, 0, 33, 0, 65, 0]
+    bench_start(runner, 5000)
+    let n = 0
+    while n < 5000
+        pkg::send_bytes(bwriter, payload, 9)
+        pkg::recv_bytes(breader, 5000)
+        n += 1
+    end
+    bench_stop(runner, "bytes roundtrip 5k")
+    pkg::close_channel(bwriter)
+    pkg::close_channel(breader)
+    pkg::unlink_channel("shm-bench-bytes")
+
     # Bench 3: open/close - 500 iterations
     bench_start(runner, 500)
     let k = 0
