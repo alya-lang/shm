@@ -2,6 +2,7 @@
 ## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
 
 import "std/test"
+import "std/os" as os
 import "../src/lib.alya" as pkg
 
 function padded(tag: string, width: int) -> string
@@ -10,6 +11,12 @@ function padded(tag: string, width: int) -> string
         s += "."
     end
     return s
+end
+
+# Unique channel names per test run: POSIX segments outlive crashes,
+# so a fixed name could collide with a stale segment from an older run.
+function chan(base: string) -> string
+    return base + "-" + str(os::get_pid())
 end
 
 function main()
@@ -70,9 +77,10 @@ function main()
     # ═══════════════════════════════════════════════════════════
     # 2. Dual-Handle Send/Receive (shared segment)
     # ═══════════════════════════════════════════════════════════
-    pkg::unlink_channel("shm-test-echo")
-    let writer = pkg::open_channel("shm-test-echo")
-    let reader = pkg::open_channel("shm-test-echo")
+    let echo_name = chan("shm-test-echo")
+    pkg::unlink_channel(echo_name)
+    let writer = pkg::open_channel(echo_name)
+    let reader = pkg::open_channel(echo_name)
     runner_assert(r, writer >= 0, "writer handle opened")
     runner_assert(r, reader >= 0, "reader handle opened")
 
@@ -93,23 +101,25 @@ function main()
 
     pkg::close_channel(writer)
     pkg::close_channel(reader)
-    pkg::unlink_channel("shm-test-echo")
+    pkg::unlink_channel(echo_name)
 
     # ═══════════════════════════════════════════════════════════
     # 3. Receive Timeout on Empty Channel
     # ═══════════════════════════════════════════════════════════
-    pkg::unlink_channel("shm-test-empty")
-    let idle = pkg::open_channel("shm-test-empty", 4096, pkg::ShmOverflow.Block)
+    let empty_name = chan("shm-test-empty")
+    pkg::unlink_channel(empty_name)
+    let idle = pkg::open_channel(empty_name, 4096, pkg::ShmOverflow.Block)
     let no_msg, no_kind = pkg::shm_recv(idle, 65536, 200)
     runner_assert_eq(r, no_msg is null, true, "empty channel recv times out with null")
     pkg::close_channel(idle)
-    pkg::unlink_channel("shm-test-empty")
+    pkg::unlink_channel(empty_name)
 
     # ═══════════════════════════════════════════════════════════
     # 4. Overwrite Drops Oldest Messages
     # ═══════════════════════════════════════════════════════════
-    pkg::unlink_channel("shm-test-overwrite")
-    let ow = pkg::open_channel("shm-test-overwrite", 1024, pkg::ShmOverflow.Overwrite)
+    let ow_name = chan("shm-test-overwrite")
+    pkg::unlink_channel(ow_name)
+    let ow = pkg::open_channel(ow_name, 1024, pkg::ShmOverflow.Overwrite)
     let i = 0
     while i < 10
         pkg::send_text(ow, padded("msg-" + str(i), 200), i)
@@ -130,13 +140,14 @@ function main()
     runner_assert_str_eq(r, drained[len(drained) - 1], padded("msg-9", 200), "newest message survives")
     runner_assert_eq(r, last_kind, 9, "message type of last record preserved")
     pkg::close_channel(ow)
-    pkg::unlink_channel("shm-test-overwrite")
+    pkg::unlink_channel(ow_name)
 
     # ═══════════════════════════════════════════════════════════
     # 5. Block Mode Times Out on Full Channel
     # ═══════════════════════════════════════════════════════════
-    pkg::unlink_channel("shm-test-block")
-    let bl = pkg::open_channel("shm-test-block", 1024, pkg::ShmOverflow.Block)
+    let bl_name = chan("shm-test-block")
+    pkg::unlink_channel(bl_name)
+    let bl = pkg::open_channel(bl_name, 1024, pkg::ShmOverflow.Block)
     pkg::send_text(bl, padded("fill", 900))
     let blocked = false
     try
@@ -148,29 +159,31 @@ function main()
     let fill_back, fill_kind = pkg::recv_text(bl, 2000)
     runner_assert_str_eq(r, fill_back, padded("fill", 900), "first message intact after block timeout")
     pkg::close_channel(bl)
-    pkg::unlink_channel("shm-test-block")
+    pkg::unlink_channel(bl_name)
 
     # ═══════════════════════════════════════════════════════════
     # 6. Capacity Mismatch & Oversize Messages
     # ═══════════════════════════════════════════════════════════
-    pkg::unlink_channel("shm-test-mismatch")
-    let first = pkg::open_channel("shm-test-mismatch", 1024)
+    let mm_name = chan("shm-test-mismatch")
+    pkg::unlink_channel(mm_name)
+    let first = pkg::open_channel(mm_name, 1024)
     let mismatch = false
     try
-        pkg::open_channel("shm-test-mismatch", 2048)
+        pkg::open_channel(mm_name, 2048)
     catch e
         mismatch = true
     end
     runner_assert_eq(r, mismatch, true, "capacity mismatch with live channel throws")
     pkg::close_channel(first)
-    pkg::unlink_channel("shm-test-mismatch")
-    let reopened = pkg::open_channel("shm-test-mismatch", 2048)
+    pkg::unlink_channel(mm_name)
+    let reopened = pkg::open_channel(mm_name, 2048)
     runner_assert(r, reopened >= 0, "reopen after unlink succeeds")
     pkg::close_channel(reopened)
-    pkg::unlink_channel("shm-test-mismatch")
+    pkg::unlink_channel(mm_name)
 
-    pkg::unlink_channel("shm-test-huge")
-    let hg = pkg::open_channel("shm-test-huge", 1024)
+    let hg_name = chan("shm-test-huge")
+    pkg::unlink_channel(hg_name)
+    let hg = pkg::open_channel(hg_name, 1024)
     let huge = false
     try
         pkg::send_text(hg, padded("x", 2000))
@@ -179,7 +192,7 @@ function main()
     end
     runner_assert_eq(r, huge, true, "message larger than capacity throws")
     pkg::close_channel(hg)
-    pkg::unlink_channel("shm-test-huge")
+    pkg::unlink_channel(hg_name)
 
     let failed = runner_summary(r)
     if failed > 0

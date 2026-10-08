@@ -475,9 +475,14 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
         }
         fresh = 1;
     } else if (st.st_size != (off_t)(cap + ALYA_SHM_HEADER_SIZE)) {
+        char msg[160];
+        snprintf(msg, sizeof(msg),
+                 "shm: capacity mismatch with existing channel (have %lld, want %llu; unlink first)",
+                 (long long)st.st_size,
+                 (unsigned long long)(cap + ALYA_SHM_HEADER_SIZE));
         close(fd);
         sem_close(sem);
-        set_error("shm: capacity mismatch with existing channel (unlink first)");
+        set_error(msg);
         return -1;
     }
     view = mmap(0, (size_t)(cap + ALYA_SHM_HEADER_SIZE), PROT_READ | PROT_WRITE,
