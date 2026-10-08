@@ -407,9 +407,7 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
     size_t i = 0;
     size_t j = 0;
     sem_t *sem = SEM_FAILED;
-    int fd = -1;
-    struct stat st;
-    int fresh = 0;
+    int fd = -1;\r\n    struct stat st;
     void *view = 0;
     uint64_t cap = 0;
     int slot = 0;
@@ -467,6 +465,9 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
         return -1;
     }
     cap = (uint64_t)capacity;
+    /* fstat size is only a creation hint: some kernels report page-rounded
+     * sizes, so anything >= expected maps cleanly and the header stays
+     * authoritative for capacity checks after the lock is held. */
     if (st.st_size == 0) {
         if (ftruncate(fd, (off_t)(cap + ALYA_SHM_HEADER_SIZE)) != 0) {
             set_error("shm: ftruncate failed");
@@ -474,11 +475,10 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
             sem_close(sem);
             return -1;
         }
-        fresh = 1;
-    } else if (st.st_size != (off_t)(cap + ALYA_SHM_HEADER_SIZE)) {
+    } else if (st.st_size < (off_t)(cap + ALYA_SHM_HEADER_SIZE)) {
         char msg[160];
         snprintf(msg, sizeof(msg),
-                 "shm: capacity mismatch with existing channel (have %lld, want %llu; unlink first)",
+                 "shm: existing segment smaller than requested (have %lld, want %llu; unlink first)",
                  (long long)st.st_size,
                  (unsigned long long)(cap + ALYA_SHM_HEADER_SIZE));
         close(fd);
@@ -518,24 +518,30 @@ int shm_open_channel(const char *name, long long capacity, int overflow, int pol
         set_error("shm: lock timeout during open");
         return -1;
     }
-    if (fresh) {
-        write_u64(s->base, 0, ALYA_SHM_MAGIC);
-        write_u64(s->base, 8, ALYA_SHM_VERSION);
-        write_u64(s->base, 16, cap);
-        write_u64(s->base, 24, 0);
-        write_u64(s->base, 32, 0);
-    } else {
-        if (read_u64(s->base, 0) != ALYA_SHM_MAGIC ||
-            read_u64(s->base, 8) != ALYA_SHM_VERSION) {
+    /* Double-checked init: a racer may have initialized first. */
+    if (read_u64(s->base, 0) == ALYA_SHM_MAGIC &&
+        read_u64(s->base, 8) == ALYA_SHM_VERSION) {
+        uint64_t stored = read_u64(s->base, 16);
+        if (stored != cap) {
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "shm: capacity mismatch with existing channel (have %llu, want %llu; unlink first)",
+                     (unsigned long long)stored, (unsigned long long)cap);
             unlock_slot(s);
             munmap(view, (size_t)(cap + ALYA_SHM_HEADER_SIZE));
             close(fd);
             sem_close(sem);
             g_slots[slot].used = 0;
-            set_error("shm: existing segment is not an Alya channel");
+            set_error(msg);
             return -1;
         }
-        s->capacity = read_u64(s->base, 16);
+        s->capacity = stored;
+    } else {
+        write_u64(s->base, 0, ALYA_SHM_MAGIC);
+        write_u64(s->base, 8, ALYA_SHM_VERSION);
+        write_u64(s->base, 16, cap);
+        write_u64(s->base, 24, 0);
+        write_u64(s->base, 32, 0);
     }
     unlock_slot(s);
     return slot;
