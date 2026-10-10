@@ -80,7 +80,7 @@ alya install
 | `broadcast` | ✅ | Fan-out readers (`subscribe`, `unsubscribe`, `recv/peek_for`). |
 | `rpc` | ✅ | Request/reply helper (`call_text`). |
 
-One native engine backs all slices; `bytes`, `broadcast`, and `rpc` combine with `core` (e.g. `--features core,bytes`). The `ShmOverflow`/`ShmError` vocabulary always stays available.
+One native engine backs all slices; `bytes`, `broadcast`, and `rpc` imply `core` (e.g. `--features bytes` also enables `core`). The `ShmOverflow`/`ShmError` vocabulary always stays available.
 
 ```bash
 # Full build (default)

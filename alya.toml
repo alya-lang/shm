@@ -26,9 +26,11 @@ links = "shm"
 [features]
 default = ["core", "bytes", "broadcast", "rpc"]
 core = []
-bytes = []
-broadcast = []
-rpc = []
+# Byte, broadcast and rpc helpers open channels via core, so they imply it
+# (same idiom as datatypes `bloom_filter = ["bit_set"]`).
+bytes = ["core"]
+broadcast = ["core"]
+rpc = ["core"]
 
 # [lint]
 # disabled_rules = []
