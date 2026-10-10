@@ -18,6 +18,18 @@ c-flags = ["-O2"]
 c-include-dirs = ["c"]
 links = "shm"
 
+# Optional: feature-gated API slices. Members name another feature;
+# gate the using code with `@cfg(feature = "...")` (see `src/lib.alya`,
+# `src/types.alya` and `src/core/channel.alya`). `default` is active
+# unless the caller passes `--no-default-features`; select features
+# explicitly via `alya build/run/test/bench/install --features <a,b>`.
+[features]
+default = ["core", "bytes", "broadcast", "rpc"]
+core = []
+bytes = []
+broadcast = []
+rpc = []
+
 # [lint]
 # disabled_rules = []
 # exclude = []

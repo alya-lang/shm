@@ -24,6 +24,9 @@ import "../ffi.alya"
 ##
 ## ### Returns
 ## Channel slot handle (>= 0).
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_open(name: string, capacity: int = 1048576, overflow: int = ShmOverflow.Overwrite, polling_ms: int = 10) -> int
     if name is null or name == ""
         throw ShmError { message: "shm: invalid channel name", code: 1 }
@@ -56,6 +59,9 @@ end
 ##
 ## ### Returns
 ## Channel slot handle (>= 0).
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_open_config(cfg) -> int
     if cfg is null or shm_config_is_valid(cfg) == false
         throw ShmError { message: "shm: invalid channel configuration", code: 1 }
@@ -73,6 +79,9 @@ end
 ##
 ## ### Returns
 ## Always 0.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_close(slot: int) -> int
     if slot < 0
         return 0
@@ -92,6 +101,9 @@ end
 ##
 ## ### Returns
 ## Always 0.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_unlink(name: string) -> int
     if name is null or name == ""
         return 0
@@ -113,6 +125,9 @@ end
 ##
 ## ### Returns
 ## Payload bytes written.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_send(slot: int, payload, msg_type: int = 0, timeout_ms: int = 5000) -> int
     if slot < 0
         throw ShmError { message: "shm: invalid channel slot", code: 3 }
@@ -227,6 +242,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_recv(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
     return drain_message(slot, max_bytes, timeout_ms, 1)
 end
@@ -243,6 +261,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_peek(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
     return drain_message(slot, max_bytes, timeout_ms, 0)
 end
@@ -255,6 +276,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload when empty.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_try_recv(slot: int, max_bytes: int = 65536)
     return drain_message(slot, max_bytes, 0, 1)
 end
@@ -271,6 +295,9 @@ end
 ##
 ## ### Returns
 ## Payload bytes written, or -1 when the send cannot complete.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_try_send(slot: int, payload, msg_type: int = 0) -> int
     try
         return shm_send(slot, payload, msg_type, 0)
@@ -286,6 +313,9 @@ end
 ##
 ## ### Returns
 ## Buffered byte count, or -1 for invalid handles.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_available(slot: int) -> int
     if slot < 0
         return -1
@@ -303,6 +333,9 @@ end
 ##
 ## ### Returns
 ## `ShmStats` with sent, received, and dropped totals.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_stats(slot: int) -> ShmStats
     if slot < 0
         throw ShmError { message: "shm: invalid channel slot", code: 3 }
@@ -331,6 +364,9 @@ end
 ##
 ## ### Returns
 ## Payload bytes written.
+##
+## Requires the `bytes` feature (default-on).
+@cfg(feature = "bytes")
 pub function shm_send_bytes(slot: int, bytes, msg_type: int = 0, timeout_ms: int = 5000) -> int
     if slot < 0
         throw ShmError { message: "shm: invalid channel slot", code: 3 }
@@ -379,6 +415,9 @@ end
 ##
 ## ### Returns
 ## Reader id (1-7) for `shm_recv_for` and friends.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function shm_subscribe(slot: int) -> int
     if slot < 0
         throw ShmError { message: "shm: invalid channel slot", code: 3 }
@@ -400,6 +439,9 @@ end
 ##
 ## ### Returns
 ## Always 0.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function shm_unsubscribe(slot: int, reader: int) -> int
     if slot < 0
         return 0
@@ -425,6 +467,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function shm_recv_for(slot: int, reader: int, max_bytes: int = 65536, timeout_ms: int = 5000)
     return drain_message(slot, max_bytes, timeout_ms, 1, reader)
 end
@@ -439,6 +484,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function shm_peek_for(slot: int, reader: int, max_bytes: int = 65536, timeout_ms: int = 5000)
     return drain_message(slot, max_bytes, timeout_ms, 0, reader)
 end
@@ -451,6 +499,9 @@ end
 ##
 ## ### Returns
 ## Buffered byte count for that reader, or -1 on faults.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function shm_reader_available(slot: int, reader: int) -> int
     if slot < 0
         return -1
@@ -473,6 +524,9 @@ end
 ##
 ## ### Returns
 ## `(bytes, msg_type)` tuple with null array on timeout.
+##
+## Requires the `bytes` feature (default-on).
+@cfg(feature = "bytes")
 pub function shm_recv_bytes(slot: int, max_bytes: int = 65536, timeout_ms: int = 5000)
     if slot < 0
         throw ShmError { message: "shm: invalid channel slot", code: 3 }

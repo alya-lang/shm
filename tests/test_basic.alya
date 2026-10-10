@@ -19,10 +19,8 @@ function chan(base: string) -> string
     return base + "-" + str(os::get_pid())
 end
 
-function main()
-    test_suite("shm Test Suite")
-    let r = runner_new()
-
+@cfg(feature = "core")
+function test_core(r)
     # ═══════════════════════════════════════════════════════════
     # 1. Configuration & Validation
     # ═══════════════════════════════════════════════════════════
@@ -195,7 +193,7 @@ function main()
     pkg::unlink_channel(hg_name)
 
     # ═══════════════════════════════════════════════════════════
-    # 7. Statistics, Peek, Try Ops, Bytes & Call Pattern
+    # 7a. Statistics, Peek & Try Ops
     # ═══════════════════════════════════════════════════════════
     let st_name = chan("shm-test-stats")
     pkg::unlink_channel(st_name)
@@ -263,7 +261,17 @@ function main()
     runner_assert_eq(r, drops.dropped, 6, "overwrite run dropped == 6")
     pkg::close_channel(ow2)
     pkg::unlink_channel(ow2_name)
+end
 
+@cfg(not(feature = "core"))
+function test_core(r)
+end
+
+@cfg(feature = "bytes")
+function test_bytes(r)
+    # ═══════════════════════════════════════════════════════════
+    # 7b. Binary Bytes Roundtrip
+    # ═══════════════════════════════════════════════════════════
     let bin_name = chan("shm-test-bytes")
     pkg::unlink_channel(bin_name)
     let bin = pkg::open_channel(bin_name)
@@ -291,7 +299,17 @@ function main()
     runner_assert_eq(r, len(empty_raw), 0, "empty byte message has length 0")
     pkg::close_channel(bin)
     pkg::unlink_channel(bin_name)
+end
 
+@cfg(not(feature = "bytes"))
+function test_bytes(r)
+end
+
+@cfg(feature = "rpc")
+function test_rpc(r)
+    # ═══════════════════════════════════════════════════════════
+    # 7c. Request/Reply Call Pattern
+    # ═══════════════════════════════════════════════════════════
     let req_name = chan("shm-test-req")
     let rep_name = chan("shm-test-rep")
     pkg::unlink_channel(req_name)
@@ -311,7 +329,14 @@ function main()
     pkg::close_channel(rep_reader)
     pkg::unlink_channel(req_name)
     pkg::unlink_channel(rep_name)
+end
 
+@cfg(not(feature = "rpc"))
+function test_rpc(r)
+end
+
+@cfg(feature = "broadcast")
+function test_broadcast(r)
     # ═══════════════════════════════════════════════════════════
     # 8. Broadcast Subscribers
     # ═══════════════════════════════════════════════════════════
@@ -430,6 +455,20 @@ function main()
     runner_assert_eq(r, pkg::shm_reader_available(pin, pinned), 916, "subscriber still holds unread bytes")
     pkg::close_channel(pin)
     pkg::unlink_channel(pin_name)
+end
+
+@cfg(not(feature = "broadcast"))
+function test_broadcast(r)
+end
+
+function main()
+    test_suite("shm Test Suite")
+    let r = runner_new()
+
+    test_core(r)
+    test_bytes(r)
+    test_broadcast(r)
+    test_rpc(r)
 
     let failed = runner_summary(r)
     if failed > 0

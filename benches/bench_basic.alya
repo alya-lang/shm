@@ -4,9 +4,8 @@
 import "std/test"
 import "../src/lib.alya" as pkg
 
-function main()
-    let runner = bench_runner("shm Micro-Benchmarks")
-
+@cfg(feature = "core")
+function bench_core(runner)
     # Bench 1: config constructor - 100k iterations
     bench_start(runner, 100000)
     let i = 0
@@ -32,7 +31,26 @@ function main()
     pkg::close_channel(reader)
     pkg::unlink_channel("shm-bench")
 
-    # Bench 3: bytes roundtrip - 5k iterations
+    # Bench 3: open/close - 500 iterations
+    bench_start(runner, 500)
+    let k = 0
+    while k < 500
+        let ch = pkg::open_channel("shm-bench-open")
+        pkg::close_channel(ch)
+        k += 1
+    end
+    bench_stop(runner, "open/close 500")
+    pkg::unlink_channel("shm-bench-open")
+
+end
+
+@cfg(not(feature = "core"))
+function bench_core(runner)
+end
+
+@cfg(feature = "bytes")
+function bench_bytes(runner)
+    # Bench 4: bytes roundtrip - 5k iterations
     pkg::unlink_channel("shm-bench-bytes")
     let bwriter = pkg::open_channel("shm-bench-bytes", 1048576, pkg::ShmOverflow.Overwrite)
     let breader = pkg::open_channel("shm-bench-bytes", 1048576, pkg::ShmOverflow.Overwrite)
@@ -49,7 +67,15 @@ function main()
     pkg::close_channel(breader)
     pkg::unlink_channel("shm-bench-bytes")
 
-    # Bench 4: broadcast fan-out (1 send + 2 subscriber recvs) - 3k iterations
+end
+
+@cfg(not(feature = "bytes"))
+function bench_bytes(runner)
+end
+
+@cfg(feature = "broadcast")
+function bench_broadcast(runner)
+    # Bench 5: broadcast fan-out (1 send + 2 subscriber recvs) - 3k iterations
     pkg::unlink_channel("shm-bench-fanout")
     let fan = pkg::open_channel("shm-bench-fanout", 1048576, pkg::ShmOverflow.Overwrite)
     let fs1 = pkg::shm_subscribe(fan)
@@ -66,16 +92,18 @@ function main()
     pkg::close_channel(fan)
     pkg::unlink_channel("shm-bench-fanout")
 
-    # Bench 3: open/close - 500 iterations
-    bench_start(runner, 500)
-    let k = 0
-    while k < 500
-        let ch = pkg::open_channel("shm-bench-open")
-        pkg::close_channel(ch)
-        k += 1
-    end
-    bench_stop(runner, "open/close 500")
-    pkg::unlink_channel("shm-bench-open")
+end
+
+@cfg(not(feature = "broadcast"))
+function bench_broadcast(runner)
+end
+
+function main()
+    let runner = bench_runner("shm Micro-Benchmarks")
+
+    bench_core(runner)
+    bench_bytes(runner)
+    bench_broadcast(runner)
 
     bench_summary(runner)
 end

@@ -3,10 +3,8 @@
 
 import "../src/lib.alya" as pkg
 
-function main()
-    say "=== shm Package Showcase ==="
-    say ""
-
+@cfg(feature = "core")
+function demo_core()
     # ───────────────────────────────────────────────────────────
     # 1. Configuration
     # ───────────────────────────────────────────────────────────
@@ -65,23 +63,49 @@ function main()
     say ""
 
     # ───────────────────────────────────────────────────────────
-    # 4. Statistics & Binary Bytes
+    # 4a. Statistics
     # ───────────────────────────────────────────────────────────
-    say "--- 4. Statistics & Binary Bytes ---"
+    say "--- 4a. Statistics ---"
     pkg::unlink_channel("shm-demo-stats")
     let st_ch = pkg::open_channel("shm-demo-stats")
     pkg::send_text(st_ch, "alpha", 1)
-    pkg::send_bytes(st_ch, [72, 0, 105], 9)
     let st = pkg::channel_stats(st_ch)
     say "Stats: " + st.summary()
     let first, first_kind = pkg::recv_text(st_ch, 2000)
     say "Text:  " + first + " (type=" + str(first_kind) + ")"
-    let raw, raw_kind = pkg::recv_bytes(st_ch, 2000)
-    say "Bytes: len=" + str(len(raw)) + " type=" + str(raw_kind) + " zero_ok=" + str(raw[1] == 0)
     pkg::close_channel(st_ch)
     pkg::unlink_channel("shm-demo-stats")
     say ""
 
+end
+
+@cfg(not(feature = "core"))
+function demo_core()
+end
+
+@cfg(feature = "bytes")
+function demo_bytes()
+    # ───────────────────────────────────────────────────────────
+    # 4b. Binary Bytes
+    # ───────────────────────────────────────────────────────────
+    say "--- 4b. Binary Bytes ---"
+    pkg::unlink_channel("shm-demo-bytes")
+    let ch = pkg::open_channel("shm-demo-bytes")
+    pkg::send_bytes(ch, [72, 0, 105], 9)
+    let raw, raw_kind = pkg::recv_bytes(ch, 2000)
+    say "Bytes: len=" + str(len(raw)) + " type=" + str(raw_kind) + " zero_ok=" + str(raw[1] == 0)
+    pkg::close_channel(ch)
+    pkg::unlink_channel("shm-demo-bytes")
+    say ""
+
+end
+
+@cfg(not(feature = "bytes"))
+function demo_bytes()
+end
+
+@cfg(feature = "broadcast")
+function demo_broadcast()
     # ───────────────────────────────────────────────────────────
     # 5. Broadcast Fan-Out
     # ───────────────────────────────────────────────────────────
@@ -98,6 +122,52 @@ function main()
     pkg::close_channel(fan)
     pkg::unlink_channel("shm-demo-fanout")
     say ""
+
+end
+
+@cfg(not(feature = "broadcast"))
+function demo_broadcast()
+end
+
+@cfg(feature = "rpc")
+function demo_rpc()
+    # ───────────────────────────────────────────────────────────
+    # 6. Request/Reply Call
+    # ───────────────────────────────────────────────────────────
+    say "--- 6. Request/Reply Call ---"
+    pkg::unlink_channel("shm-demo-req")
+    pkg::unlink_channel("shm-demo-rep")
+    let req = pkg::open_channel("shm-demo-req")
+    let rep = pkg::open_channel("shm-demo-rep")
+    let rep_reader = pkg::open_channel("shm-demo-rep")
+    pkg::shm_send(req, "compute:6*7", 7, 5000)
+    let asked, asked_kind = pkg::shm_recv(req, 65536, 2000)
+    say "Service got: " + asked + " (type=" + str(asked_kind) + ")"
+    pkg::shm_send(rep, "answer:42", asked_kind, 5000)
+    let answer, answer_kind = pkg::call_text(req, rep_reader, "ping", 1, 2000)
+    say "Call got:    " + answer + " (type=" + str(answer_kind) + ")"
+    pkg::close_channel(req)
+    pkg::close_channel(rep)
+    pkg::close_channel(rep_reader)
+    pkg::unlink_channel("shm-demo-req")
+    pkg::unlink_channel("shm-demo-rep")
+    say ""
+
+end
+
+@cfg(not(feature = "rpc"))
+function demo_rpc()
+end
+
+function main()
+    say "=== shm Package Showcase ==="
+    say ""
+
+    demo_core()
+    demo_bytes()
+    demo_broadcast()
+    demo_rpc()
+
     say "Done!"
 end
 

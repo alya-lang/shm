@@ -32,7 +32,7 @@ shm/
 ├── .editorconfig           # Uniform formatting rules across IDEs and editors
 ├── .gitignore              # Ecosystem standard ignore filters
 ├── .vscode/                # VS Code workspace settings, DAP launch configurations & tasks
-├── alya.toml               # Package manifest with dependencies and native [build]
+├── alya.toml               # Package manifest with dependencies, [features] and native [build]
 ├── c/                      # Bundled native ring-buffer engine
 │   ├── shm.c               # Ring buffer, locks, events, send/recv/peek paths
 │   └── shm.h               # Native API header
@@ -69,6 +69,30 @@ Or install it directly using the Alya package CLI:
 ```bash
 alya add shm --git https://github.com/alya-lang/shm --branch main
 alya install
+```
+
+### Package Features
+
+| Feature | Default | Description |
+|:---|:---:|:---|
+| `core` | ✅ | Channel lifecycle and text messaging (`open_channel`, `open_config`, `default_config`, `close/unlink_channel`, `send/recv/peek_text`, `try_send/recv_text`, `pending_bytes`, `channel_stats`). |
+| `bytes` | ✅ | Binary payloads (`send_bytes`, `recv_bytes`). |
+| `broadcast` | ✅ | Fan-out readers (`subscribe`, `unsubscribe`, `recv/peek_for`). |
+| `rpc` | ✅ | Request/reply helper (`call_text`). |
+
+One native engine backs all slices; `bytes`, `broadcast`, and `rpc` combine with `core` (e.g. `--features core,bytes`). The `ShmOverflow`/`ShmError` vocabulary always stays available.
+
+```bash
+# Full build (default)
+alya install
+alya test
+
+# Slim build (vocabulary only; helpers become no-ops)
+alya install --no-default-features
+alya test --no-default-features
+
+# Core-only build
+alya test --no-default-features --features core
 ```
 
 ---

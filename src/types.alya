@@ -28,6 +28,9 @@ end
 ## - `capacity`: Data area size in bytes (minimum 1024).
 ## - `overflow`: Active `ShmOverflow` value.
 ## - `polling_ms`: Receiver poll slice in milliseconds.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub struct ShmConfig
     name: string,
     capacity: int,
@@ -54,6 +57,9 @@ end
 ## - `sent`: Messages accepted by the ring.
 ## - `received`: Messages consumed by receivers.
 ## - `dropped`: Messages discarded by the Overwrite policy.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub struct ShmStats
     sent: int,
     received: int,
@@ -74,6 +80,9 @@ end
 ##
 ## ### Returns
 ## Initialized `ShmConfig`.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_config(name: string, capacity: int = 1048576, overflow: int = ShmOverflow.Overwrite, polling_ms: int = 10) -> ShmConfig
     let n = name
     if n is null
@@ -97,6 +106,9 @@ end
 ##
 ## ### Returns
 ## True for a non-empty name, capacity >= 1024, and a known overflow mode.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function shm_config_is_valid(cfg) -> bool
     if cfg is null
         return false
@@ -124,6 +136,9 @@ end
 ##
 ## ### Returns
 ## True when valid, else false.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function ShmConfig.is_valid(self: ShmConfig) -> bool
     return shm_config_is_valid(self)
 end
@@ -135,6 +150,9 @@ end
 ##
 ## ### Returns
 ## Formatted `"name (capacity bytes, overflow=N)"` summary.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function ShmConfig.summary(self: ShmConfig) -> string
     return "{self.name} ({self.capacity} bytes, overflow={self.overflow})"
 end
@@ -146,6 +164,9 @@ end
 ##
 ## ### Returns
 ## Sum of received and dropped messages (what came out plus what was lost).
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function ShmStats.accounted(self: ShmStats) -> int
     return self.received + self.dropped
 end
@@ -157,6 +178,9 @@ end
 ##
 ## ### Returns
 ## Formatted `"sent=N received=N dropped=N"` summary.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function ShmStats.summary(self: ShmStats) -> string
     return "sent={self.sent} received={self.received} dropped={self.dropped}"
 end

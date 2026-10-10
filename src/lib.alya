@@ -24,6 +24,9 @@ import "./core/channel.alya"
 ## ```alya
 ## let ch = open_channel("orders")
 ## ```
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function open_channel(name: string, capacity: int = 1048576, overflow: int = ShmOverflow.Overwrite) -> int
     return shm_open(name, capacity, overflow)
 end
@@ -35,6 +38,9 @@ end
 ##
 ## ### Returns
 ## Channel slot handle (>= 0).
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function open_config(cfg) -> int
     return shm_open_config(cfg)
 end
@@ -48,6 +54,9 @@ end
 ##
 ## ### Returns
 ## Initialized `ShmConfig`.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function default_config(name: string, capacity: int = 1048576, overflow: int = ShmOverflow.Overwrite) -> ShmConfig
     return shm_config(name, capacity, overflow)
 end
@@ -59,6 +68,9 @@ end
 ##
 ## ### Returns
 ## Always 0.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function close_channel(slot: int) -> int
     return shm_close(slot)
 end
@@ -70,6 +82,9 @@ end
 ##
 ## ### Returns
 ## Always 0.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function unlink_channel(name: string) -> int
     return shm_unlink(name)
 end
@@ -92,6 +107,9 @@ end
 ## ```alya
 ## send_text(ch, "hello", 1)
 ## ```
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function send_text(slot: int, payload, msg_type: int = 0) -> int
     return shm_send(slot, payload, msg_type)
 end
@@ -109,6 +127,9 @@ end
 ## ```alya
 ## let text, kind = recv_text(ch, 1000)
 ## ```
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function recv_text(slot: int, timeout_ms: int = 5000)
     return shm_recv(slot, 65536, timeout_ms)
 end
@@ -120,6 +141,9 @@ end
 ##
 ## ### Returns
 ## Buffered byte count, or -1 for invalid handles.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function pending_bytes(slot: int) -> int
     return shm_available(slot)
 end
@@ -137,6 +161,9 @@ end
 ## let st = channel_stats(ch)
 ## say st.summary()
 ## ```
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function channel_stats(slot: int) -> ShmStats
     return shm_stats(slot)
 end
@@ -157,6 +184,9 @@ end
 ## let sub = subscribe(ch)
 ## let text, kind = recv_for(ch, sub, 1000)
 ## ```
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function subscribe(slot: int) -> int
     return shm_subscribe(slot)
 end
@@ -169,6 +199,9 @@ end
 ##
 ## ### Returns
 ## Always 0.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function unsubscribe(slot: int, reader: int) -> int
     return shm_unsubscribe(slot, reader)
 end
@@ -182,6 +215,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function recv_for(slot: int, reader: int, timeout_ms: int = 5000)
     return shm_recv_for(slot, reader, 65536, timeout_ms)
 end
@@ -195,6 +231,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
+##
+## Requires the `broadcast` feature (default-on).
+@cfg(feature = "broadcast")
 pub function peek_for(slot: int, reader: int, timeout_ms: int = 5000)
     return shm_peek_for(slot, reader, 65536, timeout_ms)
 end
@@ -207,6 +246,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload on timeout.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function peek_text(slot: int, timeout_ms: int = 5000)
     return shm_peek(slot, 65536, timeout_ms)
 end
@@ -220,6 +262,9 @@ end
 ##
 ## ### Returns
 ## Payload bytes written, or -1 when the send cannot complete.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function try_send_text(slot: int, payload, msg_type: int = 0) -> int
     return shm_try_send(slot, payload, msg_type)
 end
@@ -231,6 +276,9 @@ end
 ##
 ## ### Returns
 ## `(payload, msg_type)` tuple with null payload when empty.
+##
+## Requires the `core` feature (default-on).
+@cfg(feature = "core")
 pub function try_recv_text(slot: int)
     return shm_try_recv(slot)
 end
@@ -249,6 +297,9 @@ end
 ## ```alya
 ## send_bytes(ch, [72, 0, 105], 9)
 ## ```
+##
+## Requires the `bytes` feature (default-on).
+@cfg(feature = "bytes")
 pub function send_bytes(slot: int, bytes, msg_type: int = 0) -> int
     return shm_send_bytes(slot, bytes, msg_type)
 end
@@ -266,6 +317,9 @@ end
 ## ```alya
 ## let raw, kind = recv_bytes(ch, 1000)
 ## ```
+##
+## Requires the `bytes` feature (default-on).
+@cfg(feature = "bytes")
 pub function recv_bytes(slot: int, timeout_ms: int = 5000)
     return shm_recv_bytes(slot, 65536, timeout_ms)
 end
@@ -290,6 +344,9 @@ end
 ## ```alya
 ## let answer, kind = call_text(req, rep, "compute:6*7", 7)
 ## ```
+##
+## Requires the `rpc` feature (default-on).
+@cfg(feature = "rpc")
 pub function call_text(req_slot: int, rep_slot: int, payload, msg_type: int = 0, timeout_ms: int = 5000)
     shm_send(req_slot, payload, msg_type, timeout_ms)
     return shm_recv(rep_slot, 65536, timeout_ms)
