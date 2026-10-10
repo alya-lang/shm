@@ -154,7 +154,7 @@ end
 ## Requires the `core` feature (default-on).
 @cfg(feature = "core")
 pub function ShmConfig.summary(self: ShmConfig) -> string
-    return "{self.name} ({self.capacity} bytes, overflow={self.overflow})"
+    return f"{self.name} ({self.capacity} bytes, overflow={self.overflow})"
 end
 
 ## Returns the total messages accepted by the channel.
@@ -182,5 +182,5 @@ end
 ## Requires the `core` feature (default-on).
 @cfg(feature = "core")
 pub function ShmStats.summary(self: ShmStats) -> string
-    return "sent={self.sent} received={self.received} dropped={self.dropped}"
+    return f"sent={self.sent} received={self.received} dropped={self.dropped}"
 end
