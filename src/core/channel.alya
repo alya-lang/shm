@@ -62,7 +62,7 @@ end
 ##
 ## Requires the `core` feature (default-on).
 @cfg(feature = "core")
-pub function shm_open_config(cfg) -> int
+pub function shm_open_config(cfg: ShmConfig) -> int
     if cfg is null or shm_config_is_valid(cfg) == false
         throw ShmError { message: "shm: invalid channel configuration", code: 1 }
     end

@@ -109,7 +109,7 @@ end
 ##
 ## Requires the `core` feature (default-on).
 @cfg(feature = "core")
-pub function shm_config_is_valid(cfg) -> bool
+pub function shm_config_is_valid(cfg: ShmConfig) -> bool
     if cfg is null
         return false
     end
